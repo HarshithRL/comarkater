@@ -157,7 +157,29 @@ class ToolHandler:
         """
         last: GenieResponse | None = None
         for attempt in range(max_retries + 1):
+            try:
+                from langgraph.config import get_stream_writer
+                get_stream_writer()({
+                    "event_type": "genie_status",
+                    "phase": "start",
+                    "message": (
+                        "Fetching data..." if attempt == 0
+                        else f"Retrying data fetch (attempt {attempt + 1})..."
+                    ),
+                })
+            except Exception:
+                pass
             resp = await self.execute_query(nl_query)
+            try:
+                from langgraph.config import get_stream_writer
+                get_stream_writer()({
+                    "event_type": "genie_status",
+                    "phase": "done",
+                    "rows": getattr(resp, "row_count", None),
+                    "status": resp.status,
+                })
+            except Exception:
+                pass
             last = resp
             if resp.status in ("success", "feedback_needed"):
                 return resp
