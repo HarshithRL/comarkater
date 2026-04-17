@@ -21,7 +21,6 @@ via ``config["configurable"]["sp_token"]``.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
 import uuid
@@ -95,7 +94,7 @@ def _get_campaign_agent() -> CampaignInsightAgent:
 
 # ── Campaign insight agent node (async — wraps CampaignInsightAgent.run) ──
 
-def campaign_insight_agent_node(state: AgentState, config: RunnableConfig) -> dict:
+async def campaign_insight_agent_node(state: AgentState, config: RunnableConfig) -> dict:
     """Run the 5-phase Campaign Insight Agent and return a state update."""
     request_id = state.get("request_id", "unknown")
     try:
@@ -110,7 +109,7 @@ def campaign_insight_agent_node(state: AgentState, config: RunnableConfig) -> di
 
     agent = _get_campaign_agent()
     try:
-        return asyncio.run(agent.run(state, config))
+        return await agent.run(state, config)
     except Exception as exc:
         logger.exception(
             "campaign_insight_agent_node failed | request_id=%s | error=%s",
