@@ -1,0 +1,266 @@
+# ============================================================================
+# DOMAIN KNOWLEDGE: INTERPRETATION RULES
+# ============================================================================
+# Rules for interpreting metric values and combinations.
+# Used by Insight Agent to reason about data and generate insights.
+# ============================================================================
+
+domain: campaign_analytics
+version: "1.0"
+
+# ============================================================================
+# SINGLE METRIC INTERPRETATION
+# ============================================================================
+single_metric_rules:
+
+  - metric: delivery_rate
+    thresholds:
+      excellent: { min: 98, label: "Excellent deliverability" }
+      good: { min: 95, max: 98, label: "Good deliverability" }
+      warning: { min: 90, max: 95, label: "Deliverability needs attention" }
+      critical: { max: 90, label: "Serious deliverability issues" }
+    low_value_causes:
+      - "Invalid or outdated email addresses"
+      - "Blocked sender domain"
+      - "Expired push notification tokens"
+      - "ISP filtering or blacklisting"
+
+  - metric: open_rate
+    thresholds:
+      excellent: { min: 35, label: "Strong subject line and sender reputation" }
+      good: { min: 20, max: 35, label: "Healthy open rate" }
+      warning: { min: 10, max: 20, label: "Subject line or sender needs improvement" }
+      critical: { max: 10, label: "Poor subject line or deliverability to spam" }
+    low_value_causes:
+      - "Weak or generic subject line"
+      - "Poor sender reputation"
+      - "Messages landing in spam/promotions folder"
+      - "Audience fatigue from over-sending"
+    channel_exception:
+      sms: "SMS does not track opens — value is always 0"
+      whatsapp: "WhatsApp does not track opens — value is always 0"
+
+  - metric: click_through_rate
+    thresholds:
+      excellent: { min: 5, label: "Exceptional engagement" }
+      good: { min: 2, max: 5, label: "Strong engagement" }
+      average: { min: 1, max: 2, label: "Average engagement" }
+      warning: { min: 0.5, max: 1, label: "Below average engagement" }
+      critical: { max: 0.5, label: "Poor engagement" }
+    low_value_causes:
+      - "Weak call-to-action"
+      - "Content not relevant to audience"
+      - "Poor email/message design"
+      - "Link placement not prominent"
+
+  - metric: unsubscribe_rate
+    thresholds:
+      good: { max: 0.2, label: "Healthy — audience finds content relevant" }
+      warning: { min: 0.2, max: 0.5, label: "Monitor — some audience dissatisfaction" }
+      critical: { min: 0.5, label: "High churn — content or frequency issue" }
+    high_value_causes:
+      - "Sending too frequently"
+      - "Content not matching audience expectations"
+      - "Wrong audience segmentation"
+      - "Campaign fatigue"
+
+  - metric: conversion_rate
+    thresholds:
+      good: { min: 0.5, label: "Healthy conversion" }
+      average: { min: 0.1, max: 0.5, label: "Average conversion" }
+      low: { max: 0.1, label: "Low conversion" }
+    low_value_causes:
+      - "Offer not compelling enough"
+      - "Landing page issues"
+      - "Audience not purchase-ready"
+      - "Conversion tracking may not be enabled"
+    notes: "Check if conversion tracking is enabled before concluding low conversion"
+
+  - metric: bounce_rate
+    thresholds:
+      good: { max: 2, label: "Clean list" }
+      warning: { min: 2, max: 5, label: "List hygiene needs attention" }
+      critical: { min: 5, label: "Serious list quality issues" }
+    high_value_causes:
+      - "Outdated email addresses"
+      - "Invalid phone numbers"
+      - "Purchased or unverified lists"
+      - "Domain reputation issues"
+
+
+# ============================================================================
+# METRIC COMBINATION PATTERNS (diagnostic reasoning)
+# ============================================================================
+combination_patterns:
+
+  - name: engagement_without_conversion
+    condition:
+      high: [click_through_rate]
+      low: [click_to_conversion_rate]
+    interpretation: "The message and CTA are engaging users, but the post-click experience is failing"
+    likely_causes:
+      - "Landing page not optimized or broken"
+      - "Offer on landing page doesn't match campaign promise"
+      - "Checkout process has friction"
+      - "Audience is curious but not purchase-ready"
+    recommendations:
+      - "Review landing page conversion flow"
+      - "Ensure campaign message matches landing page offer"
+      - "Simplify checkout or conversion process"
+      - "Target more purchase-intent audiences"
+
+  - name: opens_without_clicks
+    condition:
+      high: [open_rate]
+      low: [click_through_rate]
+    interpretation: "Subject line is working but email body content fails to drive action"
+    likely_causes:
+      - "Weak or unclear call-to-action"
+      - "Content not relevant to what subject promised"
+      - "CTA buried too deep in the email"
+      - "Too many options / no clear single CTA"
+    recommendations:
+      - "Improve CTA visibility and clarity"
+      - "Align email content with subject line promise"
+      - "Use single prominent CTA"
+      - "Test CTA button vs text link"
+
+  - name: delivery_without_opens
+    condition:
+      high: [delivery_rate]
+      low: [open_rate]
+    interpretation: "Messages are reaching inbox but not being opened"
+    likely_causes:
+      - "Weak subject line"
+      - "Sender name not recognized or trusted"
+      - "Landing in promotions/spam folder"
+      - "Sent at wrong time"
+    recommendations:
+      - "Test different subject lines"
+      - "Use recognizable sender name"
+      - "Optimize send time (use STO)"
+      - "Check email authentication (SPF, DKIM, DMARC)"
+
+  - name: volume_without_delivery
+    condition:
+      high: [sent]
+      low: [delivery_rate]
+    interpretation: "High send volume but messages not reaching recipients"
+    likely_causes:
+      - "List contains many invalid/expired contacts"
+      - "IP or domain blacklisted"
+      - "Exceeding ISP sending limits"
+      - "Expired push tokens (especially BPN)"
+    recommendations:
+      - "Clean contact lists — remove bounced addresses"
+      - "Implement list verification"
+      - "Check sender reputation"
+      - "Warm up new sending IPs gradually"
+
+  - name: revenue_without_volume
+    condition:
+      high: [revenue_per_sent]
+      low: [sent]
+    interpretation: "Small but highly targeted campaign driving high value per message"
+    likely_causes:
+      - "Well-segmented high-value audience"
+      - "Strong offer-audience match"
+      - "Premium product campaign"
+    recommendations:
+      - "Consider expanding this audience segment carefully"
+      - "Replicate targeting strategy for other campaigns"
+      - "Document what made this campaign effective"
+
+  - name: high_unsubscribe_with_low_engagement
+    condition:
+      high: [unsubscribe_rate]
+      low: [click_through_rate, open_rate]
+    interpretation: "Audience is disengaged and actively leaving"
+    likely_causes:
+      - "Campaign frequency too high"
+      - "Content not relevant to audience"
+      - "Wrong segment targeted"
+    recommendations:
+      - "Reduce sending frequency"
+      - "Review segmentation criteria"
+      - "Re-engage with different content strategy before sending more"
+
+
+# ============================================================================
+# TREND INTERPRETATION
+# ============================================================================
+trend_rules:
+
+  - pattern: increasing
+    description: "Metric value is going up over time"
+    interpretation_depends_on:
+      positive_metrics: [delivery_rate, open_rate, click_through_rate, conversion_rate, revenue]
+      negative_metrics: [bounce_rate, unsubscribe_rate, suppression_rate]
+    notes: "Increasing is good for positive metrics, bad for negative metrics"
+
+  - pattern: decreasing
+    description: "Metric value is going down over time"
+    interpretation_depends_on:
+      positive_metrics: [delivery_rate, open_rate, click_through_rate, conversion_rate, revenue]
+      negative_metrics: [bounce_rate, unsubscribe_rate, suppression_rate]
+    notes: "Decreasing is bad for positive metrics, good for negative metrics"
+
+  - pattern: spike
+    description: "Sudden large increase in a single period"
+    likely_causes:
+      - "Seasonal event (Valentines, Diwali, Ramadan, etc.)"
+      - "Large one-time campaign"
+      - "New audience segment added"
+      - "Technical issue (duplicate sends)"
+
+  - pattern: drop
+    description: "Sudden large decrease in a single period"
+    likely_causes:
+      - "Technical delivery issue"
+      - "Audience list problem"
+      - "Holiday period with low user activity"
+      - "Campaign paused or delayed"
+
+  - pattern: stable
+    description: "Metric value stays relatively constant"
+    interpretation: "Consistent performance — no urgent issues but also no improvement"
+
+
+# ============================================================================
+# CHANNEL-SPECIFIC INTERPRETATION
+# ============================================================================
+channel_rules:
+
+  - channel: email
+    strengths: "Rich content, subject line testing, detailed tracking (opens + clicks)"
+    typical_metrics: "Open rate 20-35%, CTR 1-3%"
+    key_metric: open_rate
+    notes: "Most tracked channel. Subject line is the primary driver of opens"
+
+  - channel: sms
+    strengths: "High delivery rate, immediate reach, personal"
+    typical_metrics: "CTR 0.1-1%, no open tracking"
+    key_metric: click_through_rate
+    limitations: "No open tracking. Short message format. Higher cost per message"
+    notes: "Do not report or compare open rates for SMS"
+
+  - channel: whatsapp
+    strengths: "High engagement, conversational, rich media"
+    typical_metrics: "CTR 2-5%, high revenue per campaign"
+    key_metric: click_through_rate
+    limitations: "No open tracking. Requires opt-in. Higher cost"
+    notes: "Fewer campaigns but typically higher revenue per campaign"
+
+  - channel: apn
+    strengths: "Direct to device, immediate visibility"
+    typical_metrics: "CTR 0.2-0.6%"
+    key_metric: click_through_rate
+    limitations: "No open tracking in this dataset. Short format"
+    notes: "APN = App Push Notification. Requires app installation"
+
+  - channel: bpn
+    strengths: "Reaches web users without app"
+    typical_metrics: "CTR 0.2-0.5%"
+    key_metric: click_through_rate
+    limitations: "Very low conversion tracking (~4%). High token expiry (~12% suppression)"
+    notes: "BPN = Web Push (Browser Push). Low conversions reflect tracking gap, not poor performance"

@@ -1,0 +1,18 @@
+command:
+  - python
+  - start_server.py
+env:
+  - name: MLFLOW_TRACKING_URI
+    value: "databricks"
+  - name: AGENT_ENV
+    value: "production"
+  # IMPORTANT: Add the MLflow experiment resource to this App with "Can manage"
+  # permission in the Databricks UI (App configuration → Resources → Experiments).
+  # The App's Service Principal must have "Can manage" on the experiment so that
+  # mlflow.log_feedback() and scheduled scorers can write to it.
+  - name: MLFLOW_EXPERIMENT_ID
+    valueFrom: mlflow-experiment
+  - name: MLFLOW_EXPERIMENT_NAME
+    value: "/Users/harshith.r@diggibyte.com/netcore_insight_agent"
+  - name: SQL_WAREHOUSE_ID
+    value: "64769e0e91e002b8"

@@ -1,0 +1,254 @@
+# ============================================================================
+# DOMAIN KNOWLEDGE: CONTENT ANALYSIS
+# ============================================================================
+# Interpretation rules for content quality scores from campaign_content_metric_view
+# and benchmark data from igp_content_insights.
+# ============================================================================
+
+domain: campaign_analytics
+version: "1.0"
+
+# ============================================================================
+# CORE PRINCIPLE
+# ============================================================================
+principle: "Content analysis answers WHAT MESSAGE made campaigns work. Compare actual content features against benchmarks to identify what's driving clicks, opens, and conversions."
+
+# ============================================================================
+# DEFAULT METRIC
+# ============================================================================
+default_metric: "click"
+default_metric_rule: "Use click_content_score as the default content quality signal unless the user explicitly asks about opens (use open_content_score) or conversions (use conversion_content_score)."
+
+# ============================================================================
+# CONTENT SCORES
+# ============================================================================
+content_scores:
+
+  - name: click_content_score
+    display_name: Click Content Score
+    column: avg_click_content_score
+    description: "Overall content quality score for driving clicks (0-100%)"
+    interpretation:
+      excellent: { min: 70, label: "Strong content — most features within optimal range for clicks" }
+      good: { min: 50, max: 70, label: "Decent content — some features could be optimized" }
+      average: { min: 30, max: 50, label: "Average — significant room for content improvement" }
+      weak: { max: 30, label: "Weak content — many features outside optimal range" }
+    notes: "Computed as mean of per-component scores. Higher = more features fall within optimal ranges."
+
+  - name: open_content_score
+    display_name: Open Content Score
+    column: avg_open_content_score
+    description: "Content quality score for driving opens (0-100%)"
+    use_when: "User asks about open rates, subject line quality, or open optimization"
+    channel_relevance: "Most relevant for email (subject line) and APN/BPN (push title). Not applicable for SMS/WhatsApp (no open tracking)."
+
+  - name: conversion_content_score
+    display_name: Conversion Content Score
+    column: avg_conversion_content_score
+    description: "Content quality score for driving conversions (0-100%)"
+    use_when: "User asks about conversion optimization or purchase-driving content"
+
+# ============================================================================
+# CONTENT FEATURES
+# ============================================================================
+content_features:
+
+  - name: primary_emotion
+    display_name: Dominant Emotion
+    type: categorical
+    column: primary_emotion
+    known_values: [Urgency, FOMO, Joy, Curiosity, Festive, Excitement, Trust, Gratitude, Celebration, Neutral]
+    description: "The dominant emotional tone detected in the primary content component"
+    primary_component_rule: "Auto-selected per channel: email=subject, apn/bpn=description, sms/whatsapp=body"
+    analysis_approach: "Group campaigns by emotion, compare avg CTR/CVR/content_score per emotion. The emotion with highest avg metric is the best-performing emotion for that channel+vertical."
+
+  - name: intent_clarity
+    display_name: Intent Clarity
+    type: numeric
+    column: avg_intent_clarity
+    range: [0, 10]
+    description: "How clear the message purpose is (0=confusing, 10=crystal clear)"
+    interpretation:
+      optimal: { min: 7, label: "Clear purpose — user knows exactly what action to take" }
+      moderate: { min: 4, max: 7, label: "Somewhat clear — could be more direct" }
+      poor: { max: 4, label: "Unclear — user may not understand the message intent" }
+    recommendation_when_low: "Make the message purpose explicit in the first line. State the action you want the user to take."
+
+  - name: strong_call_to_action
+    display_name: Strong CTA
+    type: boolean
+    column: primary_has_cta
+    values: ["true", "false"]
+    description: "Whether the primary component has a strong call-to-action"
+    measure_column: pct_with_cta
+    interpretation:
+      with_cta: "Campaigns with strong CTAs typically have 20-50% higher CTR"
+      without_cta: "Missing CTA — users don't know what action to take"
+    recommendation_when_missing: "Add a clear, action-oriented CTA (Shop Now, Explore, Tap to see). Button CTAs outperform text links."
+
+  - name: value_proposition
+    display_name: Value Proposition
+    type: boolean
+    column: primary_has_value_prop
+    values: ["true", "false"]
+    description: "Whether the message states a clear benefit or offer"
+    measure_column: pct_with_value_prop
+    interpretation:
+      with_value_prop: "Clear value proposition increases relevance and click intent"
+      without_value_prop: "No clear benefit stated — user lacks motivation to engage"
+    recommendation_when_missing: "State the benefit upfront: what does the user gain? Discounts, exclusivity, new arrivals."
+
+  - name: readability
+    display_name: Readability
+    type: numeric
+    column: avg_readability
+    range: [0, 10]
+    description: "Flesch reading ease scaled to 0-10. Higher = easier to read."
+    interpretation:
+      easy: { min: 7, label: "Easy to read — accessible to broad audience" }
+      moderate: { min: 4, max: 7, label: "Moderate difficulty" }
+      difficult: { max: 4, label: "Hard to read — may lose casual readers" }
+    channel_specific:
+      sms: "Keep readability high (>7) — short format demands clarity"
+      whatsapp: "Conversational tone preferred — moderate to high readability"
+      email: "Can tolerate lower readability for detailed content"
+
+  - name: emoji_count
+    display_name: Emoji Usage
+    type: numeric
+    column: avg_emoji_count
+    description: "Number of emojis in the primary content component"
+    interpretation:
+      optimal_range: "1-3 emojis typically optimal for engagement"
+      too_many: "5+ emojis can feel unprofessional or spammy"
+      none: "No emojis — may miss engagement opportunity on casual channels"
+    channel_specific:
+      whatsapp: "Emojis expected and effective — 2-3 recommended"
+      email: "1-2 in subject line can boost open rate"
+      sms: "1 emoji can help, but space is limited"
+      apn: "0-1 emoji in push title"
+
+  - name: personalisation_count
+    display_name: Personalisation
+    type: numeric
+    column: avg_personalisation
+    description: "Number of dynamic tokens (e.g., {first_name}) in the content"
+    interpretation:
+      personalized: { min: 1, label: "Personalised — typically 10-20% higher open/click rates" }
+      not_personalized: { max: 1, label: "No personalisation — generic message" }
+    recommendation_when_zero: "Add at least one personalisation token (first_name). Personalised subject lines improve open rate by 10-20%."
+
+# ============================================================================
+# STRUCTURAL FEATURES
+# ============================================================================
+structural_features:
+
+  - name: num_images
+    column: avg_num_images
+    description: "Average images per campaign template"
+    channel_specific:
+      email: "2-4 images typical for product showcase"
+      whatsapp: "1 hero image for media templates"
+
+  - name: num_buttons
+    column: avg_num_buttons
+    description: "Average buttons per campaign template"
+    channel_specific:
+      whatsapp: "1-3 buttons. Carousel templates can have more."
+      email: "1-2 CTA buttons recommended"
+
+  - name: template_type
+    column: template_type
+    description: "Template classification"
+    channel_specific:
+      whatsapp: "text, media, carousel — media and carousel typically outperform text"
+      apn: "standard_apn"
+      bpn: "standard_bpn"
+
+# ============================================================================
+# BENCHMARK COMPARISON RULES
+# ============================================================================
+benchmark_rules:
+
+  source_table: "igp_content_insights"
+  levels: [client, vertical, global]
+
+  comparison_hierarchy:
+    - level: client
+      description: "Compare against this client's own top performers"
+      use_when: "Always try client-level first"
+    - level: vertical
+      description: "Compare against top performers in same industry vertical"
+      use_when: "Client-level has insufficient data, or user asks for industry comparison"
+    - level: global
+      description: "Compare against all top performers across all verticals"
+      use_when: "Vertical-level has insufficient data, or user asks for global benchmark"
+
+  comparison_approach:
+    - "Query content_metric_view for campaign's actual content features"
+    - "Query igp_content_insights for benchmarks matching channel + content_type + template_type"
+    - "Compare actual vs optimal for each feature"
+    - "Identify features within optimal range (score=1) vs outside (score=0)"
+    - "Recommend changes for features outside optimal range"
+
+  filter_keys: [channel, content_type, template_type]
+  match_rule: "Filter benchmarks by the campaign's channel, content_type, and template_type for relevant comparison"
+
+# ============================================================================
+# CONTENT DIAGNOSTIC PATTERNS
+# ============================================================================
+diagnostic_patterns:
+
+  - name: strong_content_low_engagement
+    condition: "click_content_score > 60% AND CTR < 1%"
+    interpretation: "Content features are within optimal ranges but engagement is low. Issue may be audience targeting, send time, or channel choice — not content."
+    recommendation: "Content is strong. Investigate audience quality and send timing."
+
+  - name: weak_content_high_engagement
+    condition: "click_content_score < 40% AND CTR > 3%"
+    interpretation: "Content is below optimal but engagement is high. Strong offer or audience quality is compensating for weak content."
+    recommendation: "Imagine the performance with better content. Optimize CTA, clarity, and emotion to amplify existing success."
+
+  - name: missing_cta_low_clicks
+    condition: "pct_with_cta < 50% AND CTR < 1%"
+    interpretation: "Most campaigns lack a strong CTA, likely contributing to low click rates."
+    recommendation: "Add clear, action-oriented CTAs to all campaigns. Button CTAs outperform text links by 20-50%."
+
+  - name: low_clarity_low_conversion
+    condition: "avg_intent_clarity < 5 AND conversion_rate < 0.2%"
+    interpretation: "Message intent is unclear, which may confuse users and reduce conversion."
+    recommendation: "State the desired action in the first line. What should the user do after reading?"
+
+  - name: emotion_mismatch
+    condition: "campaign emotion differs from benchmark optimal emotion for this channel+content_type"
+    interpretation: "Campaign uses a different emotional tone than what typically performs best for this channel and content type."
+    recommendation: "Consider testing {optimal_emotion} tone — it's the top performer for {channel} {content_type} campaigns."
+
+# ============================================================================
+# RESPONSE PATTERNS
+# ============================================================================
+response_patterns:
+
+  content_analysis:
+    structure:
+      - "Lead with the content score and what it means"
+      - "Break down individual features (emotion, CTA, clarity, etc.)"
+      - "Compare against benchmarks (client → vertical → global)"
+      - "Identify features within optimal range vs outside"
+      - "Recommend specific content changes for features outside optimal"
+    rule: "Always use click_content_score unless user specifies open or conversion"
+
+  emotion_comparison:
+    structure:
+      - "Group campaigns by emotion"
+      - "Show avg content score and avg CTR/CVR per emotion"
+      - "Identify the winning emotion for this channel+vertical"
+      - "Compare against benchmark optimal emotion"
+    rule: "Always filter by channel when comparing emotions — what works on WhatsApp may not work on email"
+
+  combined_with_performance:
+    structure:
+      - "Answer the performance question first"
+      - "Then layer in content angle: what message features drove it"
+      - "Cross-reference: did high-performing campaigns share content patterns?"
+    rule: "Content analysis supports performance conclusions — it explains the WHY behind the numbers"

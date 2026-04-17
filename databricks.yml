@@ -1,0 +1,120 @@
+bundle:
+  name: comarketer
+
+variables:
+  username:
+    default: "harshith.r@diggibyte.com"
+
+workspace:
+  host: https://dbc-540c0e05-7c19.cloud.databricks.com
+  profile: DEFAULT
+
+resources:
+  experiments:
+    comarketer_experiment:
+      name: /Users/${var.username}/netcore_insight_agent
+
+  apps:
+    comarketer:
+      name: "comarketer"
+      description: "CoMarketer multi-agent campaign analytics"
+      source_code_path: ./agent_server
+      resources:
+        - name: "mlflow-experiment"
+          description: "MLflow experiment for agent tracing"
+          experiment:
+            experiment_id: ${resources.experiments.comarketer_experiment.id}
+            permission: "CAN_MANAGE"
+        - name: "sql-warehouse"
+          description: "SQL warehouse for trace table writes"
+          sql_warehouse:
+            id: "64769e0e91e002b8"
+            permission: "CAN_USE"
+        - name: "igp-sp-client-id"
+          description: "SP credentials scope access (IGP client ID)"
+          secret:
+            scope: "agent-sp-credentials"
+            key: "igp-sp-client-id"
+            permission: "READ"
+        - name: "igp-sp-client-secret"
+          description: "SP credentials scope access (IGP client secret)"
+          secret:
+            scope: "agent-sp-credentials"
+            key: "igp-sp-client-secret"
+            permission: "READ"
+        - name: "pepe-sp-client-id"
+          description: "SP credentials scope access (Pepe client ID)"
+          secret:
+            scope: "agent-sp-credentials"
+            key: "pepe-sp-client-id"
+            permission: "READ"
+        - name: "pepe-sp-client-secret"
+          description: "SP credentials scope access (Pepe client secret)"
+          secret:
+            scope: "agent-sp-credentials"
+            key: "pepe-sp-client-secret"
+            permission: "READ"
+        - name: "shopcrocsmt-sp-client-id"
+          description: "SP credentials scope access (Crocs client ID)"
+          secret:
+            scope: "agent-sp-credentials"
+            key: "shopcrocsmt-sp-client-id"
+            permission: "READ"
+        - name: "shopcrocsmt-sp-client-secret"
+          description: "SP credentials scope access (Crocs client secret)"
+          secret:
+            scope: "agent-sp-credentials"
+            key: "shopcrocsmt-sp-client-secret"
+            permission: "READ"
+        - name: "default-sp-client-id"
+          description: "SP credentials scope access (default client ID)"
+          secret:
+            scope: "agent-sp-credentials"
+            key: "default-sp-client-id"
+            permission: "READ"
+        - name: "default-sp-client-secret"
+          description: "SP credentials scope access (default client secret)"
+          secret:
+            scope: "agent-sp-credentials"
+            key: "default-sp-client-secret"
+            permission: "READ"
+        # NOTE: Lakebase "agentmemory" (LTM + STM) must be added manually after deploy:
+        #   Databricks UI → App config → Resources → Add → Postgres → "agentmemory" → CAN_MANAGE
+        #   Asset Bundles does not yet support Lakebase/Postgres as an app resource type
+      config:
+        command:
+          - python
+          - start_server.py
+        env:
+          - name: MLFLOW_TRACKING_URI
+            value: "databricks"
+          - name: MLFLOW_EXPERIMENT_ID
+            value: ${resources.experiments.comarketer_experiment.id}
+          - name: MLFLOW_EXPERIMENT_NAME
+            value: "/Users/harshith.r@diggibyte.com/netcore_insight_agent"
+          - name: COMARKETER_ENV
+            value: "development"
+          - name: SQL_WAREHOUSE_ID
+            value: "64769e0e91e002b8"
+          - name: AI_GATEWAY_URL
+            value: "https://2276245144129479.ai-gateway.cloud.databricks.com/mlflow/v1"
+          - name: LLM_ENDPOINT_NAME
+            value: "databricks-gpt-5-2"
+          - name: GENIE_SPACE_ID
+            value: "01f1369ea0a11cd9a386669de0083fd8"
+          - name: SECRETS_SCOPE
+            value: "agent-sp-credentials"
+          - name: REQUIRE_PER_REQUEST_SP
+            value: "false"
+          - name: LAKEBASE_INSTANCE_NAME
+            value: "agentmemory"
+          - name: LAKEBASE_MODE
+            value: "autoscaling"
+          - name: LAKEBASE_PROJECT
+            value: "agentmemory"
+          - name: LAKEBASE_BRANCH
+            value: "production"
+          - name: EMBEDDING_ENDPOINT
+            value: "databricks-gte-large-en"
+          - name: EMBEDDING_DIMS
+            value: "1024"

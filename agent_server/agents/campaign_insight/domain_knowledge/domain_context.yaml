@@ -1,0 +1,222 @@
+# ============================================================================
+# DOMAIN KNOWLEDGE: DOMAIN CONTEXT
+# ============================================================================
+# Platform context, business entities, and reference data.
+# ============================================================================
+
+domain: campaign_analytics
+version: "1.0"
+
+# ============================================================================
+# PLATFORM
+# ============================================================================
+platform:
+  name: Netcore Cloud
+  type: "B2B SaaS — Marketing Technology (MarTech)"
+  description: "Customer Engagement and Marketing Automation platform"
+  core_function: "Helps companies acquire, engage, and retain customers using AI-driven marketing automation"
+  customers: "6,500+ global brands (ecommerce, BFSI, gaming, OTT, etc.)"
+
+  customer_lifecycle:
+    stages: [acquisition, activation, engagement, retention, monetization]
+    our_focus: engagement
+    analysis_scope: "Campaign performance within the engagement stage"
+
+
+# ============================================================================
+# CHANNELS
+# ============================================================================
+channels:
+
+  - code: email
+    display_name: Email
+    description: "Electronic mail campaigns"
+    tracks_opens: true
+    tracks_clicks: true
+    tracks_conversions: true
+    has_subject: true
+    volume: high
+    typical_ctr: "1-3%"
+    typical_open_rate: "20-35%"
+    revenue_contribution: high
+    campaign_count_in_data: 3213
+
+  - code: sms
+    display_name: SMS
+    description: "Short Message Service text campaigns"
+    tracks_opens: false
+    tracks_clicks: true
+    tracks_conversions: true
+    has_subject: false
+    volume: low
+    typical_ctr: "0.1-1%"
+    typical_open_rate: null
+    revenue_contribution: medium
+    campaign_count_in_data: 271
+
+  - code: whatsapp
+    display_name: WhatsApp
+    description: "WhatsApp messaging campaigns"
+    tracks_opens: false
+    tracks_clicks: true
+    tracks_conversions: true
+    has_subject: false
+    volume: medium
+    typical_ctr: "2-5%"
+    typical_open_rate: null
+    revenue_contribution: high
+    notes: "Fewer campaigns but highest revenue per campaign"
+    campaign_count_in_data: 1089
+
+  - code: apn
+    display_name: App Push Notification
+    description: "Push notifications sent to mobile app users"
+    tracks_opens: true
+    tracks_clicks: true
+    tracks_conversions: true
+    has_subject: true
+    subject_field: push_title
+    volume: high
+    typical_ctr: "0.2-0.6%"
+    revenue_contribution: low
+    campaign_count_in_data: 1959
+
+  - code: bpn
+    display_name: Web Push Notification
+    description: "Browser push notifications sent to web users"
+    tracks_opens: true
+    tracks_clicks: true
+    tracks_conversions: true
+    has_subject: true
+    subject_field: push_title
+    volume: medium
+    typical_ctr: "0.2-0.5%"
+    revenue_contribution: low
+    conversion_tracking_coverage: "~4%"
+    suppression_rate: "~12% (expired tokens)"
+    campaign_count_in_data: 1279
+
+
+# ============================================================================
+# CAMPAIGN TYPES
+# ============================================================================
+campaign_types:
+
+  - code: regular
+    display_name: Regular
+    description: "Standard one-time campaign"
+    count_in_data: 5985
+    notes: "Most common type. Baseline for comparisons"
+
+  - code: sto
+    display_name: Send Time Optimization
+    description: "Netcore AI picks the best send time per user"
+    count_in_data: 838
+    notes: "Already has AI optimization applied. When comparing STO vs regular, note this"
+
+  - code: split
+    display_name: A/B Split Test
+    description: "A/B test variant campaign"
+    count_in_data: 766
+    notes: "Variants share the same parent_id. Group by parent_id to compare variants"
+    related_fields: [parent_id, split_id]
+
+  - code: amp
+    display_name: AMP Email
+    description: "AMP interactive email format"
+    count_in_data: 167
+    notes: "Interactive emails with embedded forms, carousels"
+
+  - code: limit
+    display_name: Rate Limited
+    description: "Throttled or rate-limited sends"
+    count_in_data: 55
+    notes: "Campaigns with controlled send velocity"
+
+
+# ============================================================================
+# CAMPAIGN CATEGORIES
+# ============================================================================
+campaign_categories:
+
+  - code: "Promotion of New Arrival"
+    display_name: New Arrival Promotion
+    description: "Campaigns launching new products"
+    count_in_data: 4681
+    notes: "Largest category"
+
+  - code: "Discounted Promotion"
+    display_name: Discount Promotion
+    description: "Sale or discount campaigns"
+    count_in_data: 1842
+
+  - code: "Promotion of Recommended Products"
+    display_name: Product Recommendation
+    description: "Personalized product recommendation campaigns"
+    count_in_data: 490
+
+  - code: "Content Engagement"
+    display_name: Content Engagement
+    description: "Non-sales content (blogs, tips, newsletters)"
+    count_in_data: 359
+
+  - code: "Others"
+    display_name: Others
+    description: "Uncategorized campaigns"
+    count_in_data: 439
+
+
+# ============================================================================
+# MARKETING FUNNEL MODEL
+# ============================================================================
+funnel:
+  description: "The campaign marketing funnel from scheduling to revenue"
+  stages:
+    - name: published
+      meaning: "Messages scheduled/queued"
+      next: sent
+      drop_reason: "Suppression (dedup, frequency cap, list filter)"
+
+    - name: sent
+      meaning: "Messages actually dispatched"
+      next: delivered
+      drop_reason: "Bounce (invalid address, blocked domain, expired token)"
+
+    - name: delivered
+      meaning: "Messages received by recipient"
+      next: opened
+      drop_reason: "Not opened (weak subject, spam folder, wrong time, low interest)"
+
+    - name: opened
+      meaning: "Recipient opened the message"
+      next: clicked
+      drop_reason: "No click (weak CTA, irrelevant content, poor design)"
+      channel_exception: "SMS and WhatsApp skip this stage (no open tracking)"
+
+    - name: clicked
+      meaning: "Recipient clicked a link"
+      next: conversion
+      drop_reason: "No conversion (landing page issues, price, not purchase-ready)"
+
+    - name: conversion
+      meaning: "Recipient completed desired action"
+      next: revenue
+      drop_reason: "N/A — conversion is the goal"
+      note: "Not all campaigns track conversions"
+
+    - name: revenue
+      meaning: "Money generated from conversion"
+      note: "Zero revenue may mean tracking not enabled"
+
+
+# ============================================================================
+# DATA TABLE REFERENCE
+# ============================================================================
+data_source:
+  table: "channel.gold_channel.campaign_details"
+  metric_view: "channel.gold_channel.campaign_details_metric_view_v2"
+  grain: "One row per campaign execution"
+  unique_key: "mid + channel + campaign_name"
+  row_count: 7811
+  date_range: "February 2025 to present"
+  rls: "Row filter on cid via governance.rls.rls_filter_channel_gold_channel_campaign_details"

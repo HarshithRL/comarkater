@@ -1,0 +1,169 @@
+# ============================================================================
+# DOMAIN KNOWLEDGE: CONSTRAINTS
+# ============================================================================
+# What the system can and cannot do. Data boundaries and business rules.
+# ============================================================================
+
+domain: campaign_analytics
+version: "1.0"
+
+# ============================================================================
+# DATA CONSTRAINTS
+# ============================================================================
+data_constraints:
+
+  scope:
+    level: "campaign-level aggregated data"
+    grain: "one row per campaign execution (mid + channel + campaign_name)"
+    not_available:
+      - "individual user behavior"
+      - "user journey or path data"
+      - "cross-campaign user overlap"
+      - "user demographics or profiles"
+
+  identity:
+    unique_key: "mid + channel + campaign_name (NOT mid alone)"
+    reason: "Same mid can appear across different channels"
+    always_group_by: [campaign_id, campaign_name, channel]
+
+  time:
+    timezone: "UTC"
+    range: "February 2025 onwards (continuously updated)"
+    granularity_available: [timestamp, date, week, month, quarter, year, hour_of_day, day_of_week]
+    note: "hour_of_day is UTC — users should convert to local timezone"
+
+  multi_tenancy:
+    mechanism: "Row-Level Security (RLS) on cid column"
+    behavior: "Each client only sees their own data"
+    cid_visibility: "Hidden from users — used internally for RLS only"
+
+  revenue:
+    currency: "Varies by client — never use currency symbols"
+    zero_revenue_meaning: "May mean conversion tracking not enabled, not necessarily zero actual revenue"
+    cross_client_comparison: "Not meaningful — different currencies, different scales"
+
+
+# ============================================================================
+# METRIC COMPUTATION CONSTRAINTS
+# ============================================================================
+metric_constraints:
+
+  deterministic_rule: "All derived metrics (CTR, CVR, open rate, etc.) MUST be computed deterministically by the stats engine or metric view. The LLM must NEVER compute or invent metric formulas"
+
+  denominator_rules:
+    - metric_group: [open_rate, click_through_rate, conversion_rate, unsubscribe_rate, click_to_open_rate]
+      denominator: delivered
+      exception: "revenue_per_sent uses sent as denominator"
+    - metric_group: [click_to_conversion_rate]
+      denominator: clicked
+
+  division_safety: "All divisions use try_divide() or NULLIF to handle zero denominators"
+
+  minimum_volume:
+    rate_ranking: "delivered >= 100 for general analysis"
+    top_campaigns: "delivered >= 1000 for top/bottom rankings"
+    statistical: "delivered >= 100 AND clicked > 0"
+    reason: "Small campaigns produce unreliable rate metrics"
+
+  two_cvr_variants:
+    - name: conversion_rate
+      formula: "conversion / delivered"
+      use_when: "asking what percentage of recipients converted"
+    - name: click_to_conversion_rate
+      formula: "conversion / clicked"
+      use_when: "asking what percentage of clickers converted"
+
+  cvr_default: "If user just says 'conversion rate' without context, use delivery-based (conversion / delivered)"
+
+
+# ============================================================================
+# CHANNEL CONSTRAINTS
+# ============================================================================
+channel_constraints:
+
+  - channel: sms
+    no_opens: true
+    rule: "Never report open rate for SMS. If asked, explain SMS does not support open tracking"
+
+  - channel: whatsapp
+    no_opens: true
+    rule: "Never report open rate for WhatsApp. Same as SMS"
+
+  - channel: bpn
+    low_conversion_tracking: true
+    coverage: "~4% of BPN campaigns have conversion data"
+    rule: "Low BPN conversions reflect a tracking gap, not poor performance. Always mention this caveat"
+
+  - channel: apn
+    notes: "App Push Notification. Requires app installation. Opens tracked but may show 0 in this dataset"
+
+  - channel: email
+    full_tracking: true
+    notes: "Most complete tracking — opens, clicks, conversions all tracked"
+
+cross_channel_comparison:
+  rule: "When comparing channels, always note which metrics are not applicable for certain channels"
+  examples:
+    - "Don't compare open rates across email and SMS"
+    - "Don't conclude BPN has poor conversions without noting the tracking gap"
+
+
+# ============================================================================
+# CONTENT CONSTRAINTS
+# ============================================================================
+content_constraints:
+
+  subject_line:
+    email: "Available via email_subject dimension"
+    apn_bpn: "Available via push_title dimension"
+    sms: "Not available (NULL)"
+    whatsapp: "Not available (NULL)"
+    rule: "When user asks about 'subject lines', assume email unless they specify push"
+
+  array_columns:
+    columns: [tag_names, segment_names, segment_ids, list_names, list_ids]
+    filtering: "Use array_contains() function"
+    notes: "These are arrays — cannot use simple = comparison"
+
+  campaign_waves:
+    source: "Identified from campaign_name patterns (W1, W2, W3, W4)"
+    reliability: "Depends on naming convention — not all clients use wave naming"
+
+
+# ============================================================================
+# ANALYSIS CONSTRAINTS
+# ============================================================================
+analysis_constraints:
+
+  cannot_answer:
+    - question: "What is the ROI?"
+      reason: "Requires cost data which is not available"
+      alternative: "Can show revenue, revenue per sent, and conversion metrics"
+
+    - question: "Which users clicked/converted?"
+      reason: "Only campaign-level aggregates, no individual user data"
+      alternative: "Can show campaign-level click and conversion counts"
+
+    - question: "Compare CTA placements"
+      reason: "CTA position data not stored"
+      alternative: "Can compare subject lines and campaign categories"
+
+    - question: "What is the audience quality?"
+      reason: "No user demographics or quality scores"
+      alternative: "Can analyze by segment name if segments are meaningfully named"
+
+    - question: "Multi-touch attribution"
+      reason: "No cross-campaign user journey data"
+      alternative: "Can show per-campaign conversion and revenue"
+
+    - question: "Predict future performance"
+      reason: "No predictive model — only historical data analysis"
+      alternative: "Can show trends and patterns from historical data for pattern-based suggestions"
+
+  response_rules:
+    - "Never hallucinate data — all insights must reference actual numbers"
+    - "Never invent metric formulas — use only the defined formulas"
+    - "Always mention caveats when channel limitations apply"
+    - "Revenue = 0 does not mean campaign failed"
+    - "Low conversions on BPN does not mean poor performance"
+    - "Recommendations must be grounded in data evidence"

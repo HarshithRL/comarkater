@@ -1,0 +1,233 @@
+# ============================================================================
+# DOMAIN KNOWLEDGE: RECOMMENDATIONS
+# ============================================================================
+# Action-oriented recommendation patterns based on data findings.
+# Used by Insight Agent to provide actionable advice grounded in data.
+# ============================================================================
+
+domain: campaign_analytics
+version: "1.0"
+
+# ============================================================================
+# CORE PRINCIPLE
+# ============================================================================
+principle: "Every recommendation must be grounded in data evidence. Never suggest actions without referencing specific metrics or patterns from the analysis."
+
+# ============================================================================
+# RECOMMENDATION PATTERNS BY DIAGNOSIS
+# ============================================================================
+recommendation_patterns:
+
+  # --- Delivery Issues ---
+  - trigger:
+      metric: delivery_rate
+      condition: "< 90%"
+    severity: critical
+    diagnosis: "Significant delivery failures"
+    recommendations:
+      - action: "Clean contact lists"
+        detail: "Remove addresses that bounced in the last 30-60 days"
+        expected_impact: "Improve delivery rate by 3-5%"
+      - action: "Check sender reputation"
+        detail: "Review domain authentication (SPF, DKIM, DMARC)"
+        expected_impact: "Prevent ISP blocking"
+      - action: "Review push token freshness"
+        detail: "For APN/BPN — remove expired tokens"
+        expected_impact: "Reduce suppression rate"
+
+  # --- Engagement Issues ---
+  - trigger:
+      metric: open_rate
+      condition: "< 15%"
+      channel: [email]
+    severity: warning
+    diagnosis: "Low email open rates"
+    recommendations:
+      - action: "Test subject lines"
+        detail: "Use A/B split tests with 3-4 subject line variants"
+        expected_impact: "10-20% lift in open rate"
+      - action: "Optimize send time"
+        detail: "Use STO campaigns or test different send hours"
+        expected_impact: "5-15% lift in open rate"
+      - action: "Review sender name"
+        detail: "Use recognizable brand name, not generic addresses"
+        expected_impact: "Builds trust, improves open rate"
+
+  - trigger:
+      metric: click_through_rate
+      condition: "< 0.5%"
+    severity: warning
+    diagnosis: "Very low click engagement"
+    recommendations:
+      - action: "Improve CTA"
+        detail: "Make CTA button prominent, use action-oriented text"
+        expected_impact: "20-50% lift in CTR"
+      - action: "Reduce content length"
+        detail: "Shorter messages with one clear action tend to perform better"
+        expected_impact: "Clearer user journey to click"
+      - action: "Improve audience targeting"
+        detail: "Target engaged segments (openers of last 30-60 days)"
+        expected_impact: "Higher relevance = higher CTR"
+
+  # --- Conversion Issues ---
+  - trigger:
+      metric: click_to_conversion_rate
+      condition: "< 1%"
+      prerequisite: "click_through_rate > 2%"
+    severity: warning
+    diagnosis: "Good engagement but poor post-click conversion"
+    recommendations:
+      - action: "Review landing page"
+        detail: "Ensure campaign offer matches landing page content"
+        expected_impact: "Reduce bounce from landing page"
+      - action: "Simplify conversion flow"
+        detail: "Reduce steps between click and purchase/signup"
+        expected_impact: "Lower friction = higher conversion"
+      - action: "Check mobile experience"
+        detail: "Ensure landing page is mobile-responsive"
+        expected_impact: "Mobile users often have higher drop-off"
+
+  # --- Audience Fatigue ---
+  - trigger:
+      metric: unsubscribe_rate
+      condition: "> 0.5%"
+    severity: critical
+    diagnosis: "Audience fatigue or content mismatch"
+    recommendations:
+      - action: "Reduce send frequency"
+        detail: "Cap campaigns to 2-3 per week per user"
+        expected_impact: "Reduce unsubscribes and improve engagement"
+      - action: "Segment by engagement"
+        detail: "Create separate strategies for active vs dormant users"
+        expected_impact: "More relevant content per audience group"
+      - action: "Preference center"
+        detail: "Let users choose frequency and content types"
+        expected_impact: "Reduces forced unsubscribes"
+
+  # --- Revenue Optimization ---
+  - trigger:
+      metric: revenue_per_sent
+      condition: "declining over 3+ periods"
+    severity: warning
+    diagnosis: "Revenue efficiency declining"
+    recommendations:
+      - action: "Review audience quality"
+        detail: "Check if recent campaigns targeted less qualified segments"
+        expected_impact: "Better targeting = higher revenue per message"
+      - action: "Test higher-value offers"
+        detail: "Experiment with premium product campaigns"
+        expected_impact: "Higher average order value"
+      - action: "Optimize channel mix"
+        detail: "Shift budget toward channels with higher revenue per sent (check WhatsApp)"
+        expected_impact: "Better revenue efficiency"
+
+
+# ============================================================================
+# CHANNEL-SPECIFIC RECOMMENDATIONS
+# ============================================================================
+channel_recommendations:
+
+  email:
+    general:
+      - "Subject line is the #1 driver — always A/B test"
+      - "Personalization in subject line improves open rate by 10-20%"
+      - "Send time matters — test morning vs evening"
+    when_underperforming:
+      - "Check if landing in spam/promotions tab"
+      - "Review email design for mobile responsiveness"
+      - "Reduce image-to-text ratio"
+
+  sms:
+    general:
+      - "Keep messages under 160 characters when possible"
+      - "Include clear shortened URL for tracking"
+      - "Timing is critical — avoid early morning and late night"
+    when_underperforming:
+      - "Review message clarity and urgency"
+      - "Check if URL is working"
+      - "Verify phone number list quality"
+
+  whatsapp:
+    general:
+      - "WhatsApp has highest revenue per campaign — invest here for high-value offers"
+      - "Use rich media (images, carousels) for better engagement"
+      - "Conversational tone works better than formal"
+    when_underperforming:
+      - "Check template approval status"
+      - "Review media quality and load time"
+      - "Ensure opt-in audience is current"
+
+  apn:
+    general:
+      - "Short, urgent messages perform best"
+      - "Deep linking to specific product pages improves conversion"
+      - "Timing around app usage patterns is key"
+    when_underperforming:
+      - "Review push notification title clarity"
+      - "Check if users have notifications enabled"
+      - "Test rich push (with image) vs plain text"
+
+  bpn:
+    general:
+      - "Expect high token expiry — focus on recently active web users"
+      - "Keep title short and action-oriented"
+      - "Don't judge BPN on conversions — tracking coverage is only ~4%"
+    when_underperforming:
+      - "Clean expired web push tokens"
+      - "Review website permission prompt strategy"
+      - "Test notification timing"
+
+
+# ============================================================================
+# COMPARATIVE RECOMMENDATIONS
+# ============================================================================
+comparative_recommendations:
+
+  channel_comparison:
+    when: "User compares channels"
+    approach:
+      - "Compare on comparable metrics only (don't compare open rate across email and SMS)"
+      - "Highlight each channel's strength (email = reach, WhatsApp = revenue, push = immediacy)"
+      - "Recommend channel mix based on campaign objective"
+    objective_mapping:
+      awareness: "Email (reach) + APN (visibility)"
+      engagement: "Email (content) + WhatsApp (conversation)"
+      conversion: "WhatsApp (high CVR) + Email (volume)"
+      retention: "Email (nurture) + APN (re-engagement)"
+
+  type_comparison:
+    when: "User compares campaign types"
+    approach:
+      - "Note that STO campaigns already have AI optimization — higher performance is expected"
+      - "Split campaigns should be compared within their parent group, not against other campaigns"
+      - "Regular campaigns are the baseline"
+
+  time_comparison:
+    when: "User compares time periods"
+    approach:
+      - "Account for seasonality (Diwali, Ramadan, Valentine's, etc.)"
+      - "Compare like-for-like periods (same month last year, not adjacent months)"
+      - "Check if campaign volume changed between periods (more campaigns can dilute rates)"
+
+
+# ============================================================================
+# RESPONSE STRUCTURE
+# ============================================================================
+response_template:
+  structure:
+    - section: summary
+      content: "One sentence answering the question directly"
+    - section: data
+      content: "Supporting metrics in a clear format"
+    - section: insight
+      content: "What the data means in business context"
+    - section: recommendation
+      content: "Specific actionable next step (only when diagnostic or strategic intent)"
+    - section: caveat
+      content: "Any limitations or data caveats (only when applicable)"
+
+  rules:
+    - "Always lead with the answer, not the methodology"
+    - "Use business language, not technical jargon"
+    - "Recommendations only when the question warrants them (not for simple lookups)"
+    - "Caveats only when channel limitations or data gaps apply"

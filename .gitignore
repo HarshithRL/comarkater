@@ -1,0 +1,142 @@
+# ============================================================
+# Credentials & Secrets — NEVER commit
+# ============================================================
+.env
+.env.*
+!.env.example
+!.env.template
+*.env
+secrets/
+.secrets
+.secrets.*
+credentials.json
+credentials.yaml
+credentials.yml
+*credential*
+*secret*
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+id_dsa
+id_dsa.*
+id_ed25519
+id_ed25519.*
+*.ppk
+service-account*.json
+*-service-account.json
+gcp-key*.json
+aws-credentials*
+.aws/
+.azure/
+.gcloud/
+auth.json
+token.json
+tokens.json
+*.token
+oauth*.json
+
+# Databricks
+.databrickscfg
+.databricks/
+databricks-*.cfg
+*.databrickscfg
+
+# API keys / provider configs
+openai.key
+anthropic.key
+.anthropic/
+.openai/
+
+# ============================================================
+# Python
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+develop-eggs/
+eggs/
+.eggs/
+wheels/
+sdist/
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Testing & linting
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ============================================================
+# Databases / local data
+# ============================================================
+*.db
+*.sqlite
+*.sqlite3
+mlflow.db
+mlruns/
+mlartifacts/
+
+# ============================================================
+# IDE / editor
+# ============================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ============================================================
+# Claude Code local state
+# ============================================================
+.claude/settings.local.json
+.claude/session_state.md
+
+# ============================================================
+# Logs / temp
+# ============================================================
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+
+# ============================================================
+# Repo-specific large/generated files
+# ============================================================
+repo_tree*.txt
+dead/

@@ -1,0 +1,189 @@
+# ============================================================================
+# DOMAIN KNOWLEDGE: INTENT TAXONOMY
+# ============================================================================
+# Classifies user questions into intent categories.
+# Used by CoMarketer for routing and by Insight Agent for response planning.
+# ============================================================================
+
+domain: campaign_analytics
+version: "1.0"
+
+intents:
+
+  - name: performance_lookup
+    description: Simple lookup of metrics for specific campaigns, channels, or time periods
+    complexity: simple
+    data_needs: single_query
+    examples:
+      - "How many campaigns were sent in March?"
+      - "What is the total revenue for email?"
+      - "Show me CTR for WhatsApp campaigns"
+    response_pattern: "Return the requested metrics directly"
+
+  - name: ranking
+    description: Rank campaigns or dimensions by a specific metric
+    complexity: simple
+    data_needs: single_query
+    examples:
+      - "Top 10 campaigns by revenue"
+      - "Which campaign had the highest CTR?"
+      - "Bottom 5 campaigns by engagement"
+    response_pattern: "Return ranked list with the sorting metric and supporting context"
+    constraints:
+      - "Apply minimum volume filters when ranking by rate metrics (delivered >= 100 or 1000)"
+
+  - name: comparison
+    description: Compare performance across categories (channels, types, categories)
+    complexity: medium
+    data_needs: single_query
+    examples:
+      - "Compare email vs WhatsApp performance"
+      - "Which channel had the highest revenue?"
+      - "Regular vs STO campaign performance"
+    response_pattern: "Return all groups with comparable metrics, highlight the winner and notable differences"
+    constraints:
+      - "Note channel-specific limitations (SMS no opens, BPN low conversion tracking)"
+
+  - name: trend_analysis
+    description: Analyze performance over time (daily, weekly, monthly)
+    complexity: medium
+    data_needs: single_query
+    examples:
+      - "Weekly trends for March"
+      - "Month over month performance"
+      - "Daily revenue trend"
+    response_pattern: "Return time-ordered data, identify direction (improving/declining), highlight anomalies"
+    granularity_options:
+      - daily: "sent_date"
+      - weekly: "sent_week (starts Monday)"
+      - monthly: "sent_month"
+      - quarterly: "sent_quarter"
+      - hourly: "hour_of_day (UTC)"
+
+  - name: funnel_analysis
+    description: Analyze the full campaign funnel from published to conversion
+    complexity: medium
+    data_needs: single_query
+    examples:
+      - "Show me the campaign funnel for email"
+      - "Where do users drop off?"
+      - "Published to conversion flow"
+    response_pattern: "Return all funnel stages with step-by-step drop-off rates"
+    funnel_stages:
+      - stage: published
+        next: sent
+        drop_metric: suppression_rate
+      - stage: sent
+        next: delivered
+        drop_metric: bounce_rate
+      - stage: delivered
+        next: opened
+        drop_metric: "1 - open_rate"
+      - stage: opened
+        next: clicked
+        drop_metric: "1 - click_to_open_rate"
+      - stage: clicked
+        next: conversion
+        drop_metric: "1 - click_to_conversion_rate"
+
+  - name: diagnostic
+    description: Identify why campaigns succeeded or failed by examining metric combinations
+    complexity: complex
+    data_needs: multi_query_or_reasoning
+    examples:
+      - "Which campaigns had high CTR but low conversions?"
+      - "Why did this campaign underperform?"
+      - "High open rate but poor click-through"
+    response_pattern: "Identify the metric mismatch, diagnose the likely cause, suggest action"
+    diagnostic_patterns:
+      - pattern: "high_ctr_low_conversion"
+        condition: "CTR > 2% AND click_to_conversion_rate < 1%"
+        likely_cause: "Message is engaging but landing page, offer, or audience is misaligned"
+        suggestion: "Review landing page, offer relevance, or audience targeting"
+      - pattern: "high_open_low_click"
+        condition: "open_rate > 25% AND CTR < 0.5%"
+        likely_cause: "Subject line works but content or CTA is weak"
+        suggestion: "Improve email body content, CTA placement, or offer"
+      - pattern: "low_delivery"
+        condition: "delivery_rate < 90%"
+        likely_cause: "List quality issues, expired tokens, blocked domains"
+        suggestion: "Clean list, remove invalid addresses, check domain reputation"
+      - pattern: "high_unsubscribe"
+        condition: "unsubscribe_rate > 0.5%"
+        likely_cause: "Content irrelevance, sending too frequently, wrong audience"
+        suggestion: "Review segmentation, reduce frequency, improve content relevance"
+      - pattern: "high_suppression"
+        condition: "suppression_rate > 10%"
+        likely_cause: "Aggressive deduplication, frequency capping, or expired tokens (BPN)"
+        suggestion: "Review suppression rules, clean push token lists"
+
+  - name: time_optimization
+    description: Find optimal send times and days
+    complexity: medium
+    data_needs: single_query
+    examples:
+      - "Best time to send email campaigns"
+      - "Which day of the week gets best engagement?"
+      - "Optimal send hour for push notifications"
+    response_pattern: "Return hour/day grouped metrics, identify the best performing slots"
+    constraints:
+      - "Timestamps are UTC — remind users to convert to local timezone"
+      - "STO campaigns already have AI-optimized send times — note this when comparing"
+
+  - name: content_analysis
+    description: Analyze performance by content (subject lines, titles, categories)
+    complexity: medium
+    data_needs: single_query
+    examples:
+      - "Which subject lines performed best?"
+      - "Best push notification titles"
+      - "Performance by campaign category"
+    response_pattern: "Return content-grouped metrics, identify high-performing patterns"
+    constraints:
+      - "Subject lines are only for email"
+      - "Push titles are for apn and bpn"
+      - "SMS and WhatsApp have no subject/title"
+
+  - name: strategic_recommendation
+    description: Provide actionable recommendations based on data patterns
+    complexity: complex
+    data_needs: multi_query_and_reasoning
+    examples:
+      - "What should I improve?"
+      - "Suggest campaign strategy for next month"
+      - "What could have been done to improve performance?"
+    response_pattern: "Analyze data across multiple dimensions, identify patterns, provide specific recommendations"
+    constraints:
+      - "Recommendations must be grounded in data — never speculate without evidence"
+      - "Cannot recommend specific creative content — only data-driven insights"
+
+  - name: ab_test_analysis
+    description: Compare A/B test variants
+    complexity: medium
+    data_needs: single_query
+    examples:
+      - "Compare A/B test variants"
+      - "Which split variant won?"
+      - "A/B test results"
+    response_pattern: "Group by parent_id and split_id, compare variant metrics, identify winner"
+    constraints:
+      - "Only campaign_type = 'split' campaigns have A/B variants"
+      - "Variants share the same parent_id"
+
+  - name: out_of_scope
+    description: Questions that cannot be answered with available data
+    examples:
+      - "What is the ROI of this campaign?"
+      - "Which users clicked?"
+      - "Compare CTA placements"
+      - "What is the audience quality?"
+      - "Show me user journeys"
+      - "Multi-touch attribution"
+    response_pattern: "Explain what data would be needed and why it's not available"
+    missing_data:
+      - roi: "Requires cost data (not available)"
+      - user_level: "Only campaign-level aggregates available, no individual user data"
+      - cta_placement: "CTA position not stored in dataset"
+      - audience_quality: "No user demographics or quality scores"
+      - attribution: "No multi-touch attribution data"
+      - journey: "No user journey or cross-campaign behavior data"

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CoMarketer</title>
+    <link rel="stylesheet" href="/ui/static/css/main.css">
+</head>
+<body>
+
+    <div class="app-layout">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo-area">
+                    <div class="logo-icon">CM</div>
+                    <span class="logo-text">CoMarketer</span>
+                </div>
+                <button class="new-chat-btn" onclick="newConversation()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                    </svg>
+                    New Chat
+                </button>
+            </div>
+            <div class="conversation-list" id="convList">
+                <!-- Populated by JS -->
+            </div>
+            <div class="sidebar-footer">
+                <label for="client">Client</label>
+                <select id="client">
+                    {% for c in clients %}
+                    <option value="{{ c.id }}">{{ c.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </aside>
+
+        <!-- Sidebar overlay (mobile) -->
+        <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <div class="main-header" id="mainHeader">
+                <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="3" y1="6" x2="21" y2="6"/>
+                        <line x1="3" y1="12" x2="21" y2="12"/>
+                        <line x1="3" y1="18" x2="21" y2="18"/>
+                    </svg>
+                </button>
+                <span class="conv-title-header" id="convTitleHeader">New Conversation</span>
+                <span class="badge">LIVE</span>
+            </div>
+
+            <div class="chat-container" id="chat">
+                <!-- Welcome screen or messages rendered by JS -->
+            </div>
+
+            <div class="input-area">
+                <textarea id="userInput"
+                          rows="1"
+                          placeholder="Ask about your campaigns..."
+                          oninput="autoResize(this)"
+                          onkeydown="handleKeydown(event)"></textarea>
+                <button class="send-btn" id="sendBtn" onclick="sendMessage()" title="Send message">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="22" y1="2" x2="11" y2="13"/>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                    </svg>
+                </button>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast notifications -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Highcharts 11.x -->
+    <script src="https://code.highcharts.com/11.4.8/highcharts.js"></script>
+    <script src="https://code.highcharts.com/11.4.8/modules/exporting.js"></script>
+    <script src="https://code.highcharts.com/11.4.8/modules/accessibility.js"></script>
+
+    <!-- App -->
+    <script src="/ui/static/js/app.js"></script>
+</body>
+</html>

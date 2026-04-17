@@ -1,0 +1,257 @@
+# ============================================================================
+# DOMAIN KNOWLEDGE: METRICS
+# ============================================================================
+# Structured metric definitions for agent consumption.
+# Every metric includes: name, formula, denominator, unit, constraints,
+# and channel applicability.
+# ============================================================================
+
+domain: campaign_analytics
+version: "1.0"
+last_updated: "2026-04"
+
+# ============================================================================
+# BASE METRICS (raw counts from data)
+# ============================================================================
+base_metrics:
+
+  - name: published
+    display_name: Total Published
+    description: Messages scheduled or queued for sending
+    type: count
+    unit: messages
+    notes: "Published >= Sent always. Gap = suppression (dedup, frequency cap, list filter)"
+
+  - name: sent
+    display_name: Total Sent
+    description: Messages actually dispatched to recipients
+    type: count
+    unit: messages
+    notes: "Starting point of the delivery funnel"
+
+  - name: delivered
+    display_name: Total Delivered
+    description: Messages successfully received by recipients
+    type: count
+    unit: messages
+    notes: "Primary denominator for engagement rates. Delivered = Sent - Bounce approximately"
+
+  - name: opened
+    display_name: Total Opened
+    description: Messages opened by recipients
+    type: count
+    unit: messages
+    channel_applicability:
+      email: true
+      apn: true
+      bpn: true
+      sms: false
+      whatsapp: false
+    notes: "SMS and WhatsApp do NOT track opens. Value is always 0 for these channels"
+
+  - name: clicked
+    display_name: Total Clicked
+    description: Clicks on links within campaign messages
+    type: count
+    unit: clicks
+    notes: "Indicates engagement with call-to-action"
+
+  - name: conversion
+    display_name: Total Conversions
+    description: Desired actions completed (purchase, signup, etc.)
+    type: count
+    unit: conversions
+    notes: "Not all campaigns have conversion tracking. BPN has ~4% tracking coverage"
+
+  - name: revenue
+    display_name: Total Revenue
+    description: Revenue generated from the campaign
+    type: count
+    unit: currency (varies by client)
+    notes: "Revenue = 0 may mean tracking not enabled, not necessarily zero revenue"
+
+  - name: bounce
+    display_name: Total Bounced
+    description: Messages that failed to deliver
+    type: count
+    unit: messages
+    notes: "Indicates deliverability issues and list quality"
+
+  - name: unsubscribe
+    display_name: Total Unsubscribed
+    description: Recipients who opted out after receiving the campaign
+    type: count
+    unit: recipients
+    notes: "Indicates content relevance and audience fatigue"
+
+
+# ============================================================================
+# DERIVED METRICS (calculated from base metrics)
+# ============================================================================
+derived_metrics:
+
+  # --- Delivery ---
+  - name: delivery_rate
+    display_name: Delivery Rate
+    formula: "delivered / sent * 100"
+    numerator: delivered
+    denominator: sent
+    unit: percentage
+    interpretation:
+      good: ">= 95%"
+      warning: "90% - 95%"
+      bad: "< 90%"
+    notes: "Low delivery rate = deliverability issues (invalid addresses, blocked domains)"
+
+  - name: bounce_rate
+    display_name: Bounce Rate
+    formula: "bounce / sent * 100"
+    numerator: bounce
+    denominator: sent
+    unit: percentage
+    interpretation:
+      good: "< 2%"
+      warning: "2% - 5%"
+      bad: "> 5%"
+    notes: "High bounce rate = poor list hygiene"
+
+  - name: suppression_rate
+    display_name: Suppression Rate
+    formula: "(published - sent) / published * 100"
+    numerator: "published - sent"
+    denominator: published
+    unit: percentage
+    notes: "BPN typically has ~12% suppression due to expired web push tokens"
+
+  # --- Engagement ---
+  - name: open_rate
+    display_name: Open Rate
+    formula: "opened / delivered * 100"
+    numerator: opened
+    denominator: delivered
+    unit: percentage
+    channel_applicability:
+      email: true
+      apn: true
+      bpn: true
+      sms: false
+      whatsapp: false
+    interpretation:
+      good: "> 25%"
+      warning: "15% - 25%"
+      bad: "< 15%"
+    notes: "Only valid for email, apn, bpn. Always 0 for SMS and WhatsApp"
+
+  - name: click_through_rate
+    display_name: Click-Through Rate (CTR)
+    formula: "clicked / delivered * 100"
+    numerator: clicked
+    denominator: delivered
+    unit: percentage
+    interpretation:
+      good: "> 2%"
+      warning: "1% - 2%"
+      bad: "< 1%"
+    notes: "Primary engagement metric. Denominator is delivered (NOT sent, NOT opened)"
+
+  - name: click_to_open_rate
+    display_name: Click-to-Open Rate (CTOR)
+    formula: "clicked / opened * 100"
+    numerator: clicked
+    denominator: opened
+    unit: percentage
+    channel_applicability:
+      email: true
+      apn: true
+      bpn: true
+      sms: false
+      whatsapp: false
+    interpretation:
+      good: "> 15%"
+      warning: "8% - 15%"
+      bad: "< 8%"
+    notes: "Measures content effectiveness among engaged users"
+
+  - name: unsubscribe_rate
+    display_name: Unsubscribe Rate
+    formula: "unsubscribe / delivered * 100"
+    numerator: unsubscribe
+    denominator: delivered
+    unit: percentage
+    interpretation:
+      good: "< 0.3%"
+      warning: "0.3% - 0.5%"
+      bad: "> 0.5%"
+    notes: "High unsubscribe rate = content irrelevance or over-sending"
+
+  # --- Conversion ---
+  - name: conversion_rate
+    display_name: Conversion Rate (CVR)
+    formula: "conversion / delivered * 100"
+    numerator: conversion
+    denominator: delivered
+    unit: percentage
+    notes: "Delivery-based CVR. Use when asking 'what percentage of recipients converted'"
+
+  - name: click_to_conversion_rate
+    display_name: Click-to-Conversion Rate
+    formula: "conversion / clicked * 100"
+    numerator: conversion
+    denominator: clicked
+    unit: percentage
+    notes: "Click-based CVR. Use when asking 'what percentage of clickers converted'. Measures post-click effectiveness"
+
+  # --- Revenue ---
+  - name: revenue_per_sent
+    display_name: Revenue Per Sent
+    formula: "revenue / sent"
+    numerator: revenue
+    denominator: sent
+    unit: currency
+    notes: "Only metric using sent as denominator. Measures overall monetary efficiency"
+
+  - name: revenue_per_delivered
+    display_name: Revenue Per Delivered
+    formula: "revenue / delivered"
+    numerator: revenue
+    denominator: delivered
+    unit: currency
+
+  - name: revenue_per_conversion
+    display_name: Revenue Per Conversion
+    formula: "revenue / conversion"
+    numerator: revenue
+    denominator: conversion
+    unit: currency
+    notes: "Average value per converting action. NULL when conversions = 0"
+
+
+# ============================================================================
+# METRIC RELATIONSHIPS
+# ============================================================================
+metric_dependencies:
+  - metric: delivery_rate
+    depends_on: [delivered, sent]
+  - metric: open_rate
+    depends_on: [opened, delivered]
+  - metric: click_through_rate
+    depends_on: [clicked, delivered]
+  - metric: click_to_open_rate
+    depends_on: [clicked, opened]
+  - metric: conversion_rate
+    depends_on: [conversion, delivered]
+  - metric: click_to_conversion_rate
+    depends_on: [conversion, clicked]
+  - metric: revenue_per_sent
+    depends_on: [revenue, sent]
+  - metric: unsubscribe_rate
+    depends_on: [unsubscribe, delivered]
+
+funnel_order:
+  - published
+  - sent
+  - delivered
+  - opened
+  - clicked
+  - conversion
+  - revenue

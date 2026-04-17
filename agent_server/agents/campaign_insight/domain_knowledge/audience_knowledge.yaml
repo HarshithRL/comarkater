@@ -1,0 +1,159 @@
+# ============================================================================
+# DOMAIN KNOWLEDGE: AUDIENCE ANALYSIS
+# ============================================================================
+# Interpretation rules for audience tag distributions from audience_metric_view.
+# All values are percentages (0-100) after metric view multiplication.
+# Compare sends (who we targeted) vs conversions (who actually converted).
+# ============================================================================
+
+domain: campaign_analytics
+version: "1.0"
+
+# ============================================================================
+# CORE PRINCIPLE
+# ============================================================================
+principle: "Audience analysis answers WHO made campaigns work. Compare the profile of converters against the profile of the sent audience to identify what audience characteristics drive success."
+
+# ============================================================================
+# AUDIENCE TAG CATEGORIES
+# ============================================================================
+tag_categories:
+
+  - name: weighted_intent_score
+    display_name: Purchase Intent
+    description: "Predicted purchase readiness based on behavioral signals"
+    values: [high, medium, low]
+    key_insight: "High intent users are most likely to convert. Compare sends vs conversions — if converters are disproportionately high-intent, intent is a strong predictor."
+    columns:
+      sends: [avg_sends_high_intent_pct, avg_sends_medium_intent_pct, avg_sends_low_intent_pct]
+      clicks: [avg_clicks_high_intent_pct]
+      conversions: [avg_conversions_high_intent_pct]
+
+  - name: communication_health
+    display_name: Communication Health
+    description: "User engagement level on each channel"
+    values: [engaged, not_engaged, click_fatigue]
+    channels: [email, sms, whatsapp, apn]
+    key_insight: "Engaged users respond better. Click fatigue indicates over-targeting — users open but no longer click."
+    columns_pattern: "avg_{event}_{channel}_engaged_pct"
+    fatigue_column: "avg_sends_email_click_fatigue_pct"
+
+  - name: app_status
+    display_name: App Status
+    description: "Mobile app installation and activity state"
+    values: [installed_active, installed_inactive, not_installed]
+    key_insight: "Active app users have higher conversion rates. If most converters are app-active, push notifications and in-app campaigns are worth investing in."
+    columns:
+      sends: [avg_sends_app_active_pct]
+      conversions: [avg_conversions_app_active_pct]
+
+  - name: retarget_frequency
+    display_name: Retarget Frequency
+    description: "How often users are being targeted on each channel"
+    values: [less_than_monthly, monthly_to_weekly, weekly_plus, never]
+    channels: [email, whatsapp]
+    key_insight: "Low-frequency targeting often correlates with better engagement — less fatigue. If converters are mostly low-frequency, over-targeting is hurting conversion."
+    columns_pattern: "avg_{event}_{channel}_low_freq_pct"
+
+# ============================================================================
+# INTERPRETATION RULES
+# ============================================================================
+interpretation_rules:
+
+  intent_lift:
+    description: "Compare high-intent % in conversions vs sends"
+    formula: "conversions_high_intent_pct / sends_high_intent_pct"
+    thresholds:
+      strong_signal: { min: 2.0, label: "Intent is a strong conversion predictor — high-intent users convert at 2x+ their share of sends" }
+      moderate_signal: { min: 1.3, max: 2.0, label: "Intent moderately predicts conversion" }
+      weak_signal: { max: 1.3, label: "Intent is not a strong differentiator for this campaign set" }
+
+  engagement_lift:
+    description: "Compare engaged % in conversions vs sends for a channel"
+    formula: "conversions_{channel}_engaged_pct / sends_{channel}_engaged_pct"
+    thresholds:
+      strong_signal: { min: 2.0, label: "Channel engagement strongly predicts conversion" }
+      moderate_signal: { min: 1.3, max: 2.0, label: "Channel engagement moderately predicts conversion" }
+      weak_signal: { max: 1.3, label: "Channel engagement is not a strong differentiator" }
+
+  fatigue_detection:
+    description: "High click fatigue in sends indicates over-targeting"
+    column: "avg_sends_email_click_fatigue_pct"
+    thresholds:
+      healthy: { max: 10, label: "Low fatigue — audience is fresh" }
+      warning: { min: 10, max: 25, label: "Moderate fatigue — some users are over-targeted" }
+      critical: { min: 25, label: "High fatigue — significant portion of audience no longer clicks despite opening" }
+
+  frequency_insight:
+    description: "Low-frequency targeting correlating with higher conversion"
+    condition: "conversions_low_freq_pct > sends_low_freq_pct"
+    interpretation: "Converters were less frequently targeted, suggesting that message fatigue reduces conversion. Recommend reducing send frequency."
+
+# ============================================================================
+# AUDIENCE DIAGNOSTIC PATTERNS
+# ============================================================================
+diagnostic_patterns:
+
+  - name: high_intent_high_conversion
+    condition: "conversions_high_intent_pct > 80% AND intent_lift > 2.0"
+    interpretation: "Conversions are driven by high-intent users. The campaign reached the right audience."
+    recommendation: "Expand high-intent audience targeting. Consider lookalike audiences based on high-intent converters."
+
+  - name: low_intent_audience
+    condition: "sends_high_intent_pct < 20%"
+    interpretation: "Most of the sent audience has low purchase intent. Campaign is reaching unready users."
+    recommendation: "Refine targeting to prioritize high-intent segments. Use behavioral signals to filter audience."
+
+  - name: engaged_channel_mismatch
+    condition: "sends_{channel}_engaged_pct < 30% for the campaign's channel"
+    interpretation: "Campaign sent on a channel where most recipients are not engaged."
+    recommendation: "Target channel-engaged users. If sending on WhatsApp, prioritize WhatsApp-Engaged users."
+
+  - name: fatigue_driven_underperformance
+    condition: "sends_email_click_fatigue_pct > 20% AND CTR < 1%"
+    interpretation: "High click fatigue in audience is likely suppressing click rates."
+    recommendation: "Reduce send frequency for fatigued users. Create a re-engagement segment with different content strategy."
+
+  - name: app_active_conversion_signal
+    condition: "conversions_app_active_pct > 70% AND sends_app_active_pct < 40%"
+    interpretation: "App-active users convert at much higher rates than their share of sends. App engagement is a strong conversion signal."
+    recommendation: "Prioritize app-active users in targeting. Use push notifications for high-intent app-active users."
+
+# ============================================================================
+# PROACTIVE NUDGE TRIGGERS
+# ============================================================================
+nudge_triggers:
+  description: "After answering a performance question, check these conditions. If any are true, offer an audience follow-up."
+
+  conditions:
+    - trigger: "intent_lift > 2.0"
+      nudge: "Interestingly, converters were predominantly high-intent users ({pct}% high intent vs {sends_pct}% in sent audience). Would you like to explore what audience profile drives success?"
+
+    - trigger: "conversions_{channel}_engaged_pct > 90%"
+      nudge: "Over {pct}% of converters were {channel}-Engaged users. Would you like to see the full audience breakdown?"
+
+    - trigger: "sends_email_click_fatigue_pct > 20%"
+      nudge: "I notice {pct}% of your sent audience is experiencing email click fatigue. Would you like to explore how audience health is affecting performance?"
+
+    - trigger: "conversions_app_active_pct > sends_app_active_pct * 2"
+      nudge: "App-active users are converting at disproportionately high rates. Want to see the full app status breakdown?"
+
+# ============================================================================
+# RESPONSE PATTERNS
+# ============================================================================
+response_patterns:
+
+  direct_audience_query:
+    structure:
+      - "Lead with the key finding (who converted/clicked/opened)"
+      - "Compare sends vs conversions profile"
+      - "Highlight the strongest signal (intent, engagement, app status)"
+      - "Provide actionable targeting recommendation"
+    example: "In your top 10 WhatsApp campaigns, converters were predominantly WhatsApp-Engaged (98.7%) with high purchase intent (100%). In contrast, only 3.1% of your sent audience was WA-Engaged. This means your message resonated with a small but high-quality segment."
+
+  proactive_nudge:
+    structure:
+      - "Complete the performance answer first"
+      - "Add a single sentence noting the audience signal"
+      - "Offer to go deeper as a follow-up question"
+    rule: "Never force audience analysis — always offer, let user decide"

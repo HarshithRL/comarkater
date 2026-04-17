@@ -1,0 +1,63 @@
+# ============================================================================
+# UPDATED DATA SOURCE SECTION FOR domain_context.yaml
+# ============================================================================
+# Replace the existing data_source section in domain_context.yaml with this.
+# Covers all 4 objects in the "CoMarketer Campaign Intelligence" Genie Space.
+# ============================================================================
+
+data_source:
+
+  genie_space:
+    name: "CoMarketer Campaign Intelligence"
+    object_count: 4
+    primary_consumer: "CoMarketer agent via API (not end users)"
+
+  # --- Object 1: Campaign Performance ---
+  campaign_metric_view:
+    view: "channel.gold_channel.campaign_details_metric_view_v2"
+    type: metric_view
+    source_table: "channel.gold_channel.campaign_details"
+    grain: "One row per campaign execution"
+    unique_key: "mid + channel + campaign_name"
+    row_count: 7811
+    date_range: "February 2025 to present"
+    rls: "Row filter on cid via governance.rls.rls_filter_channel_gold_channel_campaign_details"
+    dimensions: "campaign_id, channel, campaign_name, campaign_type, campaign_category, sent_date, sent_week, sent_month, sent_quarter, sent_year, hour_of_day, day_of_week, email_subject, push_title"
+    measures: "total_sent, total_delivered, total_opened, total_clicked, total_conversion, total_revenue, total_bounce, total_unsubscribe, delivery_rate, bounce_rate, open_rate, click_through_rate, click_to_open_rate, unsubscribe_rate, conversion_rate, click_to_conversion_rate, revenue_per_sent, revenue_per_delivered, campaign_count"
+    notes: "Primary campaign performance data. All derived rates pre-computed with try_divide."
+
+  # --- Object 2: Audience Composition ---
+  audience_metric_view:
+    view: "channel.gold_channel.audience_metric_view"
+    type: metric_view
+    source_table: "channel.gold_channel.campaign_audience_user_tags"
+    joined_with: "channel.gold_channel.campaign_details (on mid + channel)"
+    grain: "One row per campaign execution (audience tags pre-aggregated)"
+    unique_key: "mid + channel"
+    rls: "Inherited from campaign_details JOIN"
+    dimensions: "campaign_id, channel, campaign_name, campaign_type, campaign_category, sent_date, sent_week, sent_month"
+    measures: "avg_sends_high_intent, avg_sends_medium_intent, avg_sends_low_intent, avg_conversions_high_intent, intent_lift, communication health per channel (email/sms/wa/apn engaged), app status (active/inactive/uninstalled), retarget frequency (1/2-3/4+/never), wa_engaged_lift"
+    notes: "Audience tags flattened from JSONB via get_json_object. All values are proportions (0.0 to 1.0). Includes campaign performance measures via JOIN for cross-analysis."
+
+  # --- Object 3: Content Quality ---
+  content_metric_view:
+    view: "channel.gold_channel.campaign_content_metric_view"
+    type: metric_view
+    source_table: "channel.gold_channel.igp_content_details"
+    joined_with: "channel.gold_channel.campaign_details (on mid + channel)"
+    grain: "One row per campaign × content piece (aid)"
+    unique_key: "mid + channel + aid"
+    rls: "Inherited from campaign_details JOIN"
+    dimensions: "campaign_id, channel, vertical, content_type, template_type, primary_emotion, primary_has_cta, primary_has_value_prop, campaign_name, campaign_type, campaign_category, sent_date"
+    measures: "avg_click_content_score (DEFAULT), avg_open_content_score, avg_conversion_content_score, avg_intent_clarity, avg_readability, avg_emoji_count, avg_personalisation, pct_with_cta, pct_with_value_prop, avg_num_images, avg_num_buttons, click_through_rate, open_rate, conversion_rate, revenue_per_sent, campaign_count, campaigns_with_scores"
+    notes: "Content features flattened from JSONB. Primary component auto-selects per channel via COALESCE (email=subject, apn/bpn=description, sms/whatsapp=body). Content scores are pre-computed: 1=optimal, 0=outside, -1=N/A. click_content_score is the DEFAULT content signal."
+
+  # --- Object 4: Content Benchmarks ---
+  content_insights:
+    table: "channel.gold_channel.igp_content_insights"
+    type: table
+    grain: "One row per benchmark entry (level × feature × channel × content_type × template_type)"
+    levels: "client, vertical, global"
+    rls: "Public schema — shared across clients for benchmarking"
+    columns: "level, value, campaign_type, channel, content_type, template_type, feature_name, optimal_value"
+    notes: "Aggregated benchmarks for content features. Use for comparing a campaign's content scores against client/vertical/global baselines. Query separately from content_metric_view for benchmark comparisons."
