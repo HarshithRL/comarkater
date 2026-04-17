@@ -188,6 +188,18 @@ class AdaptivePlanner:
                 len(plan.steps),
                 plan.total_budget,
             )
+            try:
+                from langgraph.config import get_stream_writer
+                get_stream_writer()({
+                    "event_type": "plan_ready",
+                    "steps": [
+                        {"step_id": s.step_id, "query": s.query[:120], "dim": s.dimension}
+                        for s in plan.steps
+                    ],
+                    "budget": plan.total_budget,
+                })
+            except Exception:
+                pass
             return plan
         except Exception as exc:  # noqa: BLE001 - defensive fallback
             logger.error(
