@@ -53,20 +53,35 @@ class ChartBuilder:
         step_results: dict[int, StepResult],
     ) -> Optional[dict]:
         """Return a Highcharts options dict or ``None`` when not chartable."""
+        def _emit(chart_type: Optional[str], skipped: bool) -> None:
+            try:
+                from langgraph.config import get_stream_writer
+                get_stream_writer()({
+                    "event_type": "chart_ready",
+                    "chart_type": chart_type,
+                    "skipped": skipped,
+                })
+            except Exception:
+                pass
+
         it = (intent_type or "").strip().lower()
         if it in _SKIP_INTENTS:
+            _emit(None, True)
             return None
 
         chart_type = _CHART_TYPE_MAP.get(it)
         if not chart_type:
+            _emit(None, True)
             return None
 
         data_points = self._extract_points(step_results)
         if not data_points:
+            _emit(chart_type, True)
             return None
 
         total_rows = sum(len(rows) for _, _, rows in data_points)
         if total_rows < 2:
+            _emit(chart_type, True)
             return None
 
         horizontal = it == "ranking"
@@ -80,8 +95,10 @@ class ChartBuilder:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("ChartBuilder LLM call failed: %s", exc)
+            _emit(chart_type, True)
             return None
 
+        _emit(chart_type, False)
         return spec
 
     # ---- helpers -------------------------------------------------------
