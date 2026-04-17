@@ -92,62 +92,73 @@ class Reflector:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Reflector LLM call failed; failing open: %s", exc)
-            return VerificationResult(
+            verification = VerificationResult(
                 passed=True,
                 issues_found=[],
                 fixes_applied=[],
                 interpretation=interpretation,
                 recommendations=recommendations,
             )
-
-        if result.passed:
-            return VerificationResult(
-                passed=True,
-                issues_found=list(result.issues_found or []),
-                fixes_applied=list(result.fixes_applied or []),
-                interpretation=interpretation,
-                recommendations=recommendations,
-            )
-
-        corrected_interp = interpretation
-        if result.corrected_interpretation is not None:
-            ci = result.corrected_interpretation
-            corrected_interp = Interpretation(
-                summary=ci.summary or interpretation.summary,
-                insights=list(ci.insights or []),
-                patterns=[
-                    PatternMatch(
-                        name=p.name,
-                        description=p.description,
-                        likely_causes=list(p.likely_causes or []),
-                        severity=p.severity or "info",
-                    )
-                    for p in (ci.patterns or [])
-                ],
-                severity=ci.severity or interpretation.severity or "info",
-            )
-
-        corrected_recs = recommendations
-        if result.corrected_recommendations is not None:
-            corrected_recs = [
-                Recommendation(
-                    action=r.action,
-                    detail=r.detail,
-                    expected_impact=r.expected_impact,
-                    evidence=r.evidence,
-                    source_pattern=r.source_pattern,
+        else:
+            if result.passed:
+                verification = VerificationResult(
+                    passed=True,
+                    issues_found=list(result.issues_found or []),
+                    fixes_applied=list(result.fixes_applied or []),
+                    interpretation=interpretation,
+                    recommendations=recommendations,
                 )
-                for r in result.corrected_recommendations
-                if r.action
-            ]
+            else:
+                corrected_interp = interpretation
+                if result.corrected_interpretation is not None:
+                    ci = result.corrected_interpretation
+                    corrected_interp = Interpretation(
+                        summary=ci.summary or interpretation.summary,
+                        insights=list(ci.insights or []),
+                        patterns=[
+                            PatternMatch(
+                                name=p.name,
+                                description=p.description,
+                                likely_causes=list(p.likely_causes or []),
+                                severity=p.severity or "info",
+                            )
+                            for p in (ci.patterns or [])
+                        ],
+                        severity=ci.severity or interpretation.severity or "info",
+                    )
 
-        return VerificationResult(
-            passed=False,
-            issues_found=list(result.issues_found or []),
-            fixes_applied=list(result.fixes_applied or []),
-            interpretation=corrected_interp,
-            recommendations=corrected_recs,
-        )
+                corrected_recs = recommendations
+                if result.corrected_recommendations is not None:
+                    corrected_recs = [
+                        Recommendation(
+                            action=r.action,
+                            detail=r.detail,
+                            expected_impact=r.expected_impact,
+                            evidence=r.evidence,
+                            source_pattern=r.source_pattern,
+                        )
+                        for r in result.corrected_recommendations
+                        if r.action
+                    ]
+
+                verification = VerificationResult(
+                    passed=False,
+                    issues_found=list(result.issues_found or []),
+                    fixes_applied=list(result.fixes_applied or []),
+                    interpretation=corrected_interp,
+                    recommendations=corrected_recs,
+                )
+
+        try:
+            from langgraph.config import get_stream_writer
+            get_stream_writer()({
+                "event_type": "phase_progress",
+                "phase": "reflect",
+                "rewritten": bool(verification.interpretation) and not verification.passed,
+            })
+        except Exception:
+            pass
+        return verification
 
     # ---- helpers -------------------------------------------------------
 

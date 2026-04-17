@@ -87,7 +87,7 @@ class Interpreter:
                 for p in (result.patterns or [])
             ]
             merged = self._merge_patterns(detected_patterns, llm_patterns)
-            return Interpretation(
+            interpretation = Interpretation(
                 summary=result.summary or "",
                 insights=list(result.insights or []),
                 patterns=merged,
@@ -95,12 +95,22 @@ class Interpreter:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Interpretation LLM call failed: %s", exc)
-            return Interpretation(
+            interpretation = Interpretation(
                 summary="Interpretation could not be generated.",
                 insights=[],
                 patterns=detected_patterns,
                 severity=self._roll_up_severity(detected_patterns),
             )
+        try:
+            from langgraph.config import get_stream_writer
+            get_stream_writer()({
+                "event_type": "phase_progress",
+                "phase": "interpret",
+                "insights": len(interpretation.insights),
+            })
+        except Exception:
+            pass
+        return interpretation
 
     # ---- helpers -------------------------------------------------------
 

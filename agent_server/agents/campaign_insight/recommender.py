@@ -54,18 +54,27 @@ class Recommender:
         """Return a merged, deduped list of recommendations (up to 6)."""
         intent_type = (intent.get("intent_type") or "").strip().lower()
         if intent_type in _SKIP_INTENTS:
-            return []
-
-        base = self._collect_deterministic(interpretation, step_results)
+            final: list[Recommendation] = []
+        else:
+            base = self._collect_deterministic(interpretation, step_results)
+            try:
+                from_llm = self._call_llm(interpretation, step_results, intent_type)
+                merged = base + from_llm
+                final = self._dedupe_and_cap(merged)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Recommendation LLM call failed: %s", exc)
+                final = self._dedupe_and_cap(base)
 
         try:
-            from_llm = self._call_llm(interpretation, step_results, intent_type)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Recommendation LLM call failed: %s", exc)
-            return self._dedupe_and_cap(base)
-
-        merged = base + from_llm
-        return self._dedupe_and_cap(merged)
+            from langgraph.config import get_stream_writer
+            get_stream_writer()({
+                "event_type": "phase_progress",
+                "phase": "recommend",
+                "recs": len(final),
+            })
+        except Exception:
+            pass
+        return final
 
     # ---- helpers -------------------------------------------------------
 
