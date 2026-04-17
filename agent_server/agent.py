@@ -982,12 +982,21 @@ class CoMarketerAgent(ResponsesAgent):
 
                         # Complex path: plan from planner StreamWriter
                         elif event_type == "plan_ready":
-                            plan_items = data.get("plan", [])
-                            plan_count = data.get("plan_count", len(plan_items))
-                            if plan_items:
+                            # New schema (AdaptivePlanner): data["steps"] = [{step_id, query, dim}, ...], data["budget"]
+                            # Legacy schema (supervisor planner): data["plan"] = [{sub_question}, ...]
+                            plan_steps = data.get("steps") or data.get("plan") or []
+                            plan_count = data.get("plan_count", len(plan_steps))
+                            if plan_steps:
+                                def _step_label(i, p):
+                                    if isinstance(p, dict):
+                                        return p.get("query") or p.get("sub_question") or ""
+                                    return str(p)
                                 plan_text = f"I'll analyze this from {plan_count} angles:\n" + "\n".join(
-                                    f"  {i+1}. {p.get('sub_question', '')}" for i, p in enumerate(plan_items)
+                                    f"  {i+1}. {_step_label(i, p)}" for i, p in enumerate(plan_steps)
                                 )
+                                budget = data.get("budget")
+                                if budget:
+                                    plan_text += f"\n(budget: {budget})"
                                 p_id = f"plan_{uuid.uuid4().hex[:12]}"
                                 p_items = [{"type": "text", "id": str(uuid.uuid4()), "value": plan_text}]
                                 plan_co = build_custom_outputs(custom_inputs, "VEF9O1SFFR", "observation")
@@ -1030,19 +1039,60 @@ class CoMarketerAgent(ResponsesAgent):
 
                         # ── Transient status events (genie poll + node start) ──
                         elif event_type == "genie_status":
-                            label = GENIE_STATUS_LABELS.get(data.get("status"), None)
-                            if label:
-                                w_idx = data.get("worker_index")
-                                if w_idx is not None:
-                                    label = f"Worker {w_idx + 1}: {label}"
+                            phase = data.get("phase")
+                            # New boundary-phase flow (tool_handler): phase in {"start","done"}
+                            if phase in ("start", "done"):
+                                if phase == "start":
+                                    label = data.get("message") or "Fetching data..."
+                                else:
+                                    rows = data.get("rows")
+                                    status = data.get("status")
+                                    if isinstance(rows, int):
+                                        label = f"Received {rows:,} rows"
+                                    elif status:
+                                        label = f"Fetch {status}"
+                                    else:
+                                        label = "Fetch complete"
                                 yield _build_status_event(label, custom_inputs, agent_id="ZECDLGGP3J", request_id=request_id)
-                                logger.debug(f"AGENT.stream: STATUS emitted | genie={data.get('status')} | request_id={request_id}")
+                                logger.debug(f"AGENT.stream: STATUS emitted | genie_phase={phase} | request_id={request_id}")
+                            else:
+                                # Legacy numeric-status flow
+                                label = GENIE_STATUS_LABELS.get(data.get("status"), None)
+                                if label:
+                                    w_idx = data.get("worker_index")
+                                    if w_idx is not None:
+                                        label = f"Worker {w_idx + 1}: {label}"
+                                    yield _build_status_event(label, custom_inputs, agent_id="ZECDLGGP3J", request_id=request_id)
+                                    logger.debug(f"AGENT.stream: STATUS emitted | genie={data.get('status')} | request_id={request_id}")
+
+                        elif event_type == "phase_progress":
+                            phase = data.get("phase", "")
+                            if phase == "interpret":
+                                n = data.get("insights")
+                                label = f"Interpreting results ({n} insights)..." if isinstance(n, int) else "Interpreting results..."
+                            elif phase == "recommend":
+                                n = data.get("recs")
+                                label = f"Drafting recommendations ({n})..." if isinstance(n, int) else "Drafting recommendations..."
+                            elif phase == "reflect":
+                                rewritten = data.get("rewritten")
+                                label = "Reflecting (rewrite applied)..." if rewritten else "Reflecting..."
+                            else:
+                                label = f"{phase}..." if phase else "Processing..."
+                            yield _build_status_event(label, custom_inputs, agent_id="ZECDLGGP3J", request_id=request_id)
+                            logger.debug(f"AGENT.stream: STATUS emitted | phase_progress={phase} | request_id={request_id}")
+
+                        elif event_type == "chart_ready":
+                            if not data.get("skipped"):
+                                ct = data.get("chart_type") or "chart"
+                                yield _build_status_event(f"Chart ready ({ct})", custom_inputs, agent_id="ZECDLGGP3J", request_id=request_id)
+                                logger.debug(f"AGENT.stream: STATUS emitted | chart_type={ct} | request_id={request_id}")
+                            # When skipped=True, emit nothing (keeps the stream quiet for non-chartable queries)
 
                         elif event_type == "node_started":
                             message = data.get("message", "Processing...")
                             node = data.get("node", "")
                             # Genie/insight work → ZECDLGGP3J; supervisor/coordinator work → VEF9O1SFFR
-                            aid = "ZECDLGGP3J" if node in ("genie_analysis", "synthesizer") else "VEF9O1SFFR"
+                            aid = "ZECDLGGP3J" if node in ("genie_analysis", "synthesizer", "campaign_insight_agent") else "VEF9O1SFFR"
                             yield _build_status_event(message, custom_inputs, agent_id=aid, request_id=request_id)
                             logger.debug(f"AGENT.stream: STATUS emitted | node={node} | agent_id={aid} | request_id={request_id}")
 
