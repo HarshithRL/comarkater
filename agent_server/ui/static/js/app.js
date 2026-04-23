@@ -449,10 +449,13 @@ function buildItemsHtml(items) {
         html += '<div class="response-section">';
         const val = item.value;
         switch (item.type) {
-            case 'text':
-                html += `<div class="section-label">Analysis</div>`;
+            case 'text': {
+                const labelMap = { plan: 'Plan', analysis: 'Analysis', recommendations: 'Recommendations', narrative: 'Summary' };
+                const label = labelMap[item.name] || (item.name ? item.name.charAt(0).toUpperCase() + item.name.slice(1) : 'Analysis');
+                html += `<div class="section-label">${escapeHtml(label)}</div>`;
                 html += `<div class="text-content">${parseMd(String(val))}</div>`;
                 break;
+            }
             case 'table':
                 html += `<div class="section-label">Data</div>`;
                 html += buildTableHtml(val);
@@ -681,56 +684,46 @@ async function sendMessage() {
         eventCount++;
     }
 
-    try {
-        const resp = await fetch('/invocations', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                input: [{ role: 'user', content: query }],
-                custom_inputs: {
-                    sp_id: spId,
-                    user_name: 'UI User',
-                    user_id: 'ui-user',
-                    conversation_id: conv.id,
-                    task_type: 'analytics',
-                },
-                stream: true,
-            }),
-        });
+    // Long-running mode: the server runs the agent as a background task (up to
+    // 15 min) and persists each event to Lakebase. We tail those events via SSE.
+    // If the 120s platform proxy kills the connection mid-stream, we reconnect
+    // via GET /responses/{id}?stream=true&starting_after=<lastSeq> to resume
+    // without losing events.
+    let responseId = '';
+    let lastSeq = -1;
+    let obsCount = 0;
+    let streamDone = false;
 
-        if (!resp.ok) {
-            if (typingRow.parentNode) typingRow.remove();
-            const errText = await resp.text();
-            appendMessageRow('assistant', `<div class="error-block">HTTP ${resp.status}: ${escapeHtml(errText)}</div>`);
-            showToast(`Request failed: HTTP ${resp.status}`, 'error');
-            return;
-        }
-
+    async function consumeSSE(resp) {
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
-        let obsCount = 0;
-
         while (true) {
             const { done, value } = await reader.read();
-            if (done) break;
-
+            if (done) return;
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');
             buffer = lines.pop();
-
             for (const line of lines) {
                 if (!line.startsWith('data: ')) continue;
                 const payload = line.slice(6).trim();
-                if (!payload || payload === '[DONE]') continue;
+                if (!payload) continue;
+                if (payload === '[DONE]') { streamDone = true; return; }
 
                 let event;
                 try { event = JSON.parse(payload); } catch { continue; }
 
+                // Capture response_id (for reconnect) and sequence_number
+                // (for resume) from every event that carries them.
+                if (event.response_id && !responseId) responseId = event.response_id;
+                if (typeof event.sequence_number === 'number' && event.sequence_number > lastSeq) {
+                    lastSeq = event.sequence_number;
+                }
+
                 if (event.error) {
                     ensureBubble();
                     bubbleEl.insertAdjacentHTML('beforeend',
-                        `<div class="response-section"><div class="error-block">${escapeHtml(String(event.error))}</div></div>`);
+                        `<div class="response-section"><div class="error-block">${escapeHtml(String(event.error.message || event.error))}</div></div>`);
                     continue;
                 }
 
@@ -744,8 +737,8 @@ async function sendMessage() {
                     continue;
                 }
 
-                // SSE keepalive — ignore heartbeat events
-                if (co.type === 'HEARTBEAT') continue;
+                // SSE keepalive / stream lifecycle — not user-visible
+                if (co.type === 'HEARTBEAT' || co.type === 'STREAM_OPEN') continue;
 
                 const item = event.item || {};
                 const text = (item.content || [{}])[0]?.text || '';
@@ -765,7 +758,6 @@ async function sendMessage() {
                 if (co.type === 'RATIONALE') {
                     const el = ensureBubble();
                     const thoughtText = items[0]?.value || 'Analyzing your query...';
-                    // Find or create the collapsible thought-process container
                     let thoughtBox = el.querySelector('.thought-process');
                     if (!thoughtBox) {
                         el.insertAdjacentHTML('beforeend',
@@ -804,6 +796,59 @@ async function sendMessage() {
                 }
             }
         }
+    }
+
+    const MAX_RECONNECTS = 3;
+    let reconnectAttempt = 0;
+    let lastErr = null;
+
+    try {
+        while (!streamDone) {
+            let resp;
+            try {
+                if (reconnectAttempt === 0) {
+                    resp = await fetch('/invocations', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            input: [{ role: 'user', content: query }],
+                            custom_inputs: {
+                                sp_id: spId,
+                                user_name: 'UI User',
+                                user_id: 'ui-user',
+                                conversation_id: conv.id,
+                                task_type: 'analytics',
+                            },
+                            stream: true,
+                            background: true,
+                        }),
+                    });
+                } else {
+                    // Cannot reconnect without a response_id — abort.
+                    if (!responseId) { throw lastErr || new Error('no response_id to reconnect'); }
+                    showToast(`Reconnecting (${reconnectAttempt}/${MAX_RECONNECTS})…`, 'info');
+                    resp = await fetch(`/responses/${responseId}?stream=true&starting_after=${Math.max(lastSeq, 0)}`);
+                }
+
+                if (!resp.ok) {
+                    if (typingRow.parentNode) typingRow.remove();
+                    const errText = await resp.text();
+                    appendMessageRow('assistant', `<div class="error-block">HTTP ${resp.status}: ${escapeHtml(errText)}</div>`);
+                    showToast(`Request failed: HTTP ${resp.status}`, 'error');
+                    return;
+                }
+
+                await consumeSSE(resp);
+            } catch (innerErr) {
+                lastErr = innerErr;
+                if (streamDone) break;
+                if (!responseId || reconnectAttempt >= MAX_RECONNECTS) throw innerErr;
+                reconnectAttempt++;
+                await new Promise(r => setTimeout(r, 400));
+                continue;
+            }
+            break;
+        }
 
         if (typingRow.parentNode) typingRow.remove();
 
@@ -822,8 +867,20 @@ async function sendMessage() {
 
     } catch (err) {
         if (typingRow.parentNode) typingRow.remove();
-        appendMessageRow('assistant', `<div class="error-block">Error: ${escapeHtml(err.message)}</div>`);
-        showToast('Connection error', 'error');
+        const elapsedS = ((performance.now() - t0) / 1000).toFixed(1);
+        const exhausted = reconnectAttempt >= MAX_RECONNECTS;
+        const noResponseId = !responseId;
+        let hint;
+        if (noResponseId) {
+            hint = 'The initial connection failed before we got a response ID — reconnect not possible. Try again.';
+        } else if (exhausted) {
+            hint = `Reconnect attempts exhausted (${MAX_RECONNECTS}). The background agent may still be running — refresh to retry.`;
+        } else {
+            hint = 'Stream terminated unexpectedly. Try again in a moment.';
+        }
+        appendMessageRow('assistant',
+            `<div class="error-block">Stream ended after ${elapsedS}s — ${escapeHtml(err.message || err.name || 'unknown error')}<br><br>${escapeHtml(hint)}</div>`);
+        showToast(exhausted ? 'Reconnects exhausted' : 'Connection error', 'error');
     } finally {
         sendBtn.disabled = false;
         userInput.focus();

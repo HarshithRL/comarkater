@@ -79,6 +79,7 @@ pip-delete-this-directory.txt
 venv/
 env/
 ENV/
+.p/
 .python-version
 
 # Testing & linting

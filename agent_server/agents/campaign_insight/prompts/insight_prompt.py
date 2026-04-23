@@ -50,19 +50,83 @@ PRIOR STEP CONTEXT (compressed summaries of completed steps, for grounding):
 DOMAIN NOTE (thresholds / minimum volumes / channel rules to respect):
 {domain_note}
 
-Produce ONE PLAIN ENGLISH natural-language question that:
-- Targets the {dimension} dimension.
-- Is precise, bounded, and answerable in a single query.
-- Respects minimum_volume thresholds for any ranking.
-- Does NOT add cid filters (row-level security is enforced).
-- Does NOT restate prior-step facts - it asks only for NEW data needed.
+YOUR JOB
+--------
+Produce ONE rich, well-aggregated natural-language question that fetches
+EVERYTHING this step needs in a single Genie call.
 
-STRICT RULES — your output MUST be natural English ONLY:
-- DO NOT write SQL. No SELECT, FROM, WHERE, JOIN, GROUP BY, ORDER BY, WITH, UNION, LIMIT, backticks, or semicolons.
-- DO NOT reference table names (campaign_details_metric_view_v2, audience_metric_view, campaign_content_metric_view, igp_content_insights) or snake_case column names.
-- Describe WHAT you want in plain English, not HOW to query it.
-- Example GOOD: "What is the average click-through rate for WhatsApp campaigns sent in the last 30 days?"
-- Example BAD:  "SELECT AVG(ctr) FROM campaign_details_metric_view_v2 WHERE channel='whatsapp'"
+Genie is a schema-aware NL-to-SQL engine. In ONE question it can handle:
+  - multi-metric aggregation (sent + delivered + opened + clicked +
+    revenue returned together per group)
+  - grouping by real dimensions (campaign, channel, segment, emotion,
+    template_type, campaign_type, lifecycle_stage)
+  - comparisons (channel A vs B, Regular vs A/B, period-over-period)
+  - top-N / bottom-N with minimum-volume floors
+  - distributions per group
+  - simple joins when the schema supports them
+
+So ASK FOR THE WHOLE CUT in ONE question. Do NOT split the step into
+several thin sub-questions — that wastes calls, loses cross-group
+context, and forces later phases to re-stitch relationships Genie would
+have resolved natively.
+
+SEPARATION OF DUTIES
+--------------------
+- Genie's job: return the facts, fully aggregated, schema-correct.
+- LLM's job (LATER phases, not here): pattern detection, threshold
+  verdicts, cross-dimension narrative, recommendations.
+- THIS step's job: phrase the one question that gives the LLM the
+  richest possible fact base for its reasoning.
+
+RULES
+-----
+- Target the {dimension} dimension.
+- Precise, bounded, answerable in ONE query. Include all groupings,
+  time windows, comparisons, and metrics the task needs, in one
+  question.
+- When the task implies a comparison or trend, ask for BOTH sides /
+  ALL periods in the same question — do not issue separate calls per
+  side.
+- Respect minimum_volume thresholds for ranking queries.
+- Do NOT add cid filters (row-level security is enforced at the
+  infrastructure layer).
+- Do NOT restate prior-step facts — ask only for NEW data this step
+  needs.
+- When ranking, include the supporting funnel metrics (sent / delivered
+  / clicked / converted) alongside the ranked rate, in the SAME call.
+
+FORMAT — plain English ONLY
+---------------------------
+STRICTLY FORBIDDEN in the output:
+  - SQL keywords: SELECT, FROM, WHERE, JOIN, GROUP BY, ORDER BY, WITH,
+    UNION, LIMIT.
+  - Table names: campaign_details_metric_view_v2, audience_metric_view,
+    campaign_content_metric_view, igp_content_insights.
+  - snake_case column names, backticks, semicolons.
+
+Describe WHAT you want in plain English — Genie writes the SQL.
+
+EXAMPLES
+--------
+GOOD (rich, one shot):
+  "Compare average click-through rate, open rate, and conversion rate
+   for email and SMS campaigns between last month and this month,
+   aggregated per channel per month, with sent and clicked volumes."
+
+GOOD (ranked with supporting metrics):
+  "Show the top 5 email campaigns by open rate for last month, with
+   sent, delivered, opened, and open rate per campaign, respecting the
+   minimum-volume threshold for ranking."
+
+BAD (too thin — forces a second call):
+  "What is the CTR for email?"
+
+BAD (SQL):
+  "SELECT AVG(ctr) FROM campaign_details_metric_view_v2 WHERE channel='email'"
+
+BAD (over-decomposed — should be fused):
+  "What is the open rate for email last month?"  (the task also wants
+  this month and SMS — include them all in one question)
 
 Return only the natural-language question string, nothing else.
 """

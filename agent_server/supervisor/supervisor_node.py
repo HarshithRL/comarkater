@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Literal
 
+import mlflow
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.types import Command
@@ -77,20 +78,44 @@ def supervisor_node(
         )
 
         domain_context = _get_domain_context()
-        classifier = IntentClassifier(llm, domain_context)
-        intent = classifier.classify(query, history)
 
-        planner = SupervisorPlanner(llm, domain_context)
-        plan = planner.plan(query, intent)
+        with mlflow.start_span(name="supervisor_intent_classify") as _s:
+            _s.set_inputs({"query": query[:500], "history_len": len(history)})
+            classifier = IntentClassifier(llm, domain_context)
+            intent = classifier.classify(query, history)
+            _s.set_outputs({
+                "intent_type": intent.get("intent_type", ""),
+                "complexity": intent.get("complexity", ""),
+                "channels_mentioned": intent.get("channels_mentioned", []),
+                "requires_audience": intent.get("requires_audience", False),
+                "requires_content": intent.get("requires_content", False),
+            })
 
-        router = SupervisorRouter()
-        context = {
-            "request_id": request_id,
-            "client_id": client_id,
-            "conversation_history": state.get("conversation_history", ""),
-            "memory": state.get("ltm_context", ""),
-        }
-        target, update = router.route(query, intent, plan, context)
+        with mlflow.start_span(name="supervisor_plan") as _s:
+            _s.set_inputs({"query": query[:500], "intent_type": intent.get("intent_type", "")})
+            planner = SupervisorPlanner(llm, domain_context)
+            plan = planner.plan(query, intent)
+            _s.set_outputs({"plan_steps": len(plan or []), "plan": list(plan or [])[:10]})
+
+        with mlflow.start_span(name="supervisor_route") as _s:
+            _s.set_inputs({
+                "query": query[:500],
+                "intent_type": intent.get("intent_type", ""),
+                "plan_steps": len(plan or []),
+            })
+            router = SupervisorRouter()
+            context = {
+                "request_id": request_id,
+                "client_id": client_id,
+                "conversation_history": state.get("conversation_history", ""),
+                "memory": state.get("ltm_context", ""),
+            }
+            target, update = router.route(query, intent, plan, context)
+            _s.set_outputs({
+                "target": target,
+                "intent": update.get("intent", ""),
+                "rewritten_question": update.get("rewritten_question", "")[:500],
+            })
 
         logger.info(
             "SUPERVISOR(new): request_id=%s intent=%s complexity=%s target=%s",

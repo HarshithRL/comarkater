@@ -81,6 +81,7 @@ class SupervisorSynthesizer:
         tables = data.get("tables_for_display") or []
         chart_spec = data.get("chart_spec")
         caveats = data.get("caveats") or []
+        streamed_types = set((data.get("metadata") or {}).get("streamed_types") or [])
 
         summary = str(interpretation.get("summary", "") or "")
         insights = [str(i) for i in (interpretation.get("insights") or []) if i]
@@ -93,26 +94,27 @@ class SupervisorSynthesizer:
             "id": str(uuid.uuid4()),
             "value": narrative,
             "hidden": False,
-            "name": "analysis",
+            "name": "narrative",
         })
 
-        for tbl in tables:
-            t = _to_dict(tbl) or {}
-            columns = list(t.get("columns") or [])
-            rows = list(t.get("rows") or [])
-            items.append({
-                "type": "table",
-                "id": str(uuid.uuid4()),
-                "value": {
-                    "tableHeaders": columns,
-                    "data": rows,
-                    "alignment": ["left"] * len(columns),
-                },
-                "hidden": False,
-                "name": str(t.get("title", "")) or "table",
-            })
+        if "table" not in streamed_types:
+            for tbl in tables:
+                t = _to_dict(tbl) or {}
+                columns = list(t.get("columns") or [])
+                rows = list(t.get("rows") or [])
+                items.append({
+                    "type": "table",
+                    "id": str(uuid.uuid4()),
+                    "value": {
+                        "tableHeaders": columns,
+                        "data": rows,
+                        "alignment": ["left"] * len(columns),
+                    },
+                    "hidden": False,
+                    "name": str(t.get("title", "")) or "table",
+                })
 
-        if chart_spec:
+        if chart_spec and "chart" not in streamed_types:
             items.append({
                 "type": "chart",
                 "id": str(uuid.uuid4()),

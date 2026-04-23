@@ -202,3 +202,31 @@ class TraceLogger:
 
 # Singleton
 trace_logger = TraceLogger()
+
+
+def _fmt_flow_value(value) -> str:
+    """Stringify a flow-log field; truncate long values to 2000 chars."""
+    s = str(value) if not isinstance(value, str) else value
+    return s if len(s) <= 2000 else s[:2000] + "...[truncated]"
+
+
+def flow_log(request_id: str, phase: str, **fields) -> None:
+    """Emit one INFO-level structured flow line. Always on.
+
+    Grep stdout for ``FLOW[<first 8 of request_id>]`` to get the full trail
+    for a given request. Fields with value ``None`` are skipped.
+    """
+    rid = (request_id or "unknown")[:8]
+    kv = " ".join(f"{k}={_fmt_flow_value(v)}" for k, v in fields.items() if v is not None)
+    logger.info(f"FLOW[{rid}] {phase} | {kv}")
+
+
+def flow_debug(request_id: str, phase: str, **fields) -> None:
+    """DEBUG-level line carrying LLM outputs / verbose payloads.
+
+    Activated by setting ``LOG_LEVEL=DEBUG``. Values are wrapped in ``repr``
+    so multi-line JSON stays readable on a single log line.
+    """
+    rid = (request_id or "unknown")[:8]
+    kv = " ".join(f"{k}={_fmt_flow_value(v)!r}" for k, v in fields.items() if v is not None)
+    logger.debug(f"FLOW[{rid}] {phase}.debug | {kv}")

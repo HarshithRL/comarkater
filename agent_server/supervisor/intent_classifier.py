@@ -35,6 +35,20 @@ def _is_greeting(text: str) -> bool:
     return bool(_GREETING_PATTERNS.match(stripped) or _GREETING_WITH_NAME.match(stripped))
 
 
+# Strip leading punctuation/whitespace so noisy prefixes like ":", "-", ">"
+# don't make the LLM treat the query as malformed/incomplete.
+_LEADING_NOISE = re.compile(r"^[\s:;,.\-_>*~`'\"\\/|=+]+")
+
+
+def _normalize_query(text: str) -> str:
+    """Strip leading punctuation noise and collapse internal whitespace."""
+    if not text:
+        return ""
+    cleaned = _LEADING_NOISE.sub("", text).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned
+
+
 class _IntentModel(BaseModel):
     """Pydantic schema for structured intent classification output."""
 
@@ -52,15 +66,19 @@ _PROMPT = """You are the supervisor for a marketing analytics assistant.
 The system supports THREE analysis dimensions:
 
 1. Campaign Performance (ALWAYS INCLUDED)
-   - delivery, engagement, conversions, trends, rankings
+   - delivery, engagement, conversions, trends, rankings, comparisons,
+     anomalies, recurring patterns, top/bottom performers, drop-offs
 
 2. Audience Analysis (ONLY when explicitly requested)
    - segments, lifecycle stage, intent, demographics, device, communication health
-   - keywords: "segment", "lifecycle", "who opened", "audience", "user", "intent"
+   - keywords: "segment", "lifecycle", "who opened", "audience", "user", "intent",
+     "cohort", "persona"
 
 3. Content Analysis (ONLY when explicitly requested)
    - messaging, templates, keywords, CTA, emotions, content quality, benchmarks
-   - keywords: "content", "template", "CTA", "keyword", "emotion", "message", "subject line"
+   - keywords: "content", "template", "CTA", "keyword", "emotion", "message",
+     "subject line", "theme", "topic", "category", "creative", "copy",
+     "campaign type", "tag", "headline"
 
 4. Mixed Analysis
    - when both audience AND content are referenced
@@ -68,23 +86,53 @@ The system supports THREE analysis dimensions:
 A question is IN-SCOPE if it relates to ANY of the above dimensions.
 
 A question is OUT-OF-SCOPE ONLY if it is NOT related to marketing analytics
-(e.g., weather, pricing, HR, general knowledge, jokes).
+at all (e.g., weather, stock prices, HR, recipes, sports, general knowledge,
+jokes, coding help).
+
+The following are IN-SCOPE — never mark them out_of_scope:
+
+- Forward-looking / predictive framings ("predict", "forecast", "expected",
+  "what could perform best", "will this work", "lookalike to our best
+  campaigns", "if we ran X, how would it do"). The agent answers with
+  HISTORICAL benchmarks and patterns, but the question itself is in-scope.
+- Recommendation / advice framings ("what should we do", "suggest",
+  "recommend", "how can we improve", "what's the best approach for X").
+- Diagnostic framings ("why did X drop", "what caused the spike",
+  "which campaigns are underperforming", "anomalies").
+- Benchmark / comparison framings ("how do we compare to last quarter",
+  "lookalike", "similar to top performers").
+- Open-ended insight asks ("anything interesting", "what stands out",
+  "highlights", "give me a summary").
 
 ---
 
-Classification Rules:
+Classification Rules (apply in order):
 
-- If the question is purely conversational (greeting, thanks), use intent_type="greeting"
-- If the question is ambiguous or incomplete, use intent_type="clarification"
-- If the question is NOT related to marketing analytics, use intent_type="out_of_scope"
-- Otherwise, use one of the intent names from the taxonomy
+1. Purely conversational (greeting, thanks, "ok", "got it") → intent_type="greeting"
+2. Question is META about the conversation itself — refers to prior turns,
+   asks "what did we just discuss", "summarize what you said", "what filters
+   are applied", "clarify your last answer" → intent_type="clarification"
+3. Question is NOT related to marketing analytics → intent_type="out_of_scope"
+4. Otherwise (ANY new data/insight question, even if vague) → pick an intent
+   from the taxonomy. DEFAULT to "performance_lookup" when uncertain.
+
+DO NOT use "clarification" just because the question is short, vague, or uses
+unfamiliar terminology. If the user is asking for NEW data or insights —
+even with words like "themes", "patterns", "anything interesting", "what's
+working", "best/worst performers", "trends", "highlights" — classify it as
+a data intent (default: performance_lookup) and let the downstream agent
+handle the specifics.
+
+"clarification" is reserved for questions that ONLY make sense in the context
+of the prior conversation. A standalone analytical question is NEVER clarification.
 
 ---
 
 Dimension Signals:
 
 - requires_audience = true ONLY if audience/segment-related concepts are explicitly mentioned
-- requires_content = true ONLY if content/messaging-related concepts are explicitly mentioned
+- requires_content = true ONLY if content/messaging-related concepts (incl.
+  "theme", "topic", "category", "creative", "campaign type") are mentioned
 
 IMPORTANT:
 
@@ -92,6 +140,39 @@ IMPORTANT:
 - Content queries are VALID — do NOT mark them out_of_scope
 - Mixed queries are VALID — do NOT mark them out_of_scope
 - Campaign is always implicitly included
+- Vague-but-analytical queries are VALID — do NOT mark them clarification
+
+---
+
+Examples:
+
+Q: "Identify recurring good or bad performing themes for the past 6 months"
+→ intent_type="performance_lookup", requires_content=true, time="past 6 months"
+   (theme = content dimension; recurring patterns = campaign performance)
+
+Q: "What's working and what's not?"
+→ intent_type="performance_lookup" (vague but analytical, NOT clarification)
+
+Q: "Anything interesting in last week's campaigns?"
+→ intent_type="performance_lookup" (open-ended insight ask, NOT clarification)
+
+Q: "Show me best and worst performing categories"
+→ intent_type="performance_lookup", requires_content=true
+
+Q: "Which segments converted best?"
+→ intent_type="performance_lookup", requires_audience=true
+
+Q: "Summarize what we just discussed"
+→ intent_type="clarification" (refers to prior conversation)
+
+Q: "What channels did you mention earlier?"
+→ intent_type="clarification" (meta about prior turn)
+
+Q: "hi"
+→ intent_type="greeting"
+
+Q: "What's the weather?"
+→ intent_type="out_of_scope"
 
 ---
 
@@ -128,7 +209,10 @@ class IntentClassifier:
             metrics_mentioned, time_context, requires_audience,
             requires_content, target_agent.
         """
-        q = (query or "").strip()
+        raw = (query or "").strip()
+        q = _normalize_query(raw)
+        if q != raw:
+            logger.info(f"[INTENT_CLASSIFIER] normalized query | raw={raw[:80]!r} → q={q[:80]!r}")
         logger.info(f"[INTENT_CLASSIFIER] classify() start | query={q[:120]!r} | history_turns={len(conversation_history or [])}")
         if _is_greeting(q):
             logger.info("[INTENT_CLASSIFIER] regex greeting fast-path → intent=greeting")

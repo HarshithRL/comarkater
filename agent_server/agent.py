@@ -9,10 +9,13 @@ Stage 2 rewrite:
   6. Backward-compatible custom_outputs with new user context fields
 """
 
+import asyncio
 import json
 import logging
 import os
+import time
 import uuid
+from contextlib import AsyncExitStack
 
 import mlflow
 import mlflow.langchain
@@ -26,7 +29,6 @@ from mlflow.types.responses import (
 )
 
 from langchain_core.messages import HumanMessage
-import asyncio
 
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -52,51 +54,153 @@ from memory.stm_trimmer import get_trim_removals
 
 logger = logging.getLogger(__name__)
 
-# ── STM checkpointer (conversation history — persistent via Lakebase, fallback to InMemorySaver) ──
-_stm_checkpointer = None
-_stm_lock: "asyncio.Lock | None" = None
+import sys
+logger.info("RUNTIME: python=%s", sys.version)
+
+# ── STM checkpointer — startup-owned lifecycle (no per-request init) ──
+_stm_saver = None
+_stm_ready: bool = False
+_stm_stack: "AsyncExitStack | None" = None
+
+LAKEBASE_ALLOW_INMEMORY_FALLBACK = os.environ.get(
+    "LAKEBASE_ALLOW_INMEMORY_FALLBACK", "false"
+).lower() == "true"
 
 
-async def _get_stm_checkpointer():
-    """Lazy-init STM checkpointer. Tries Lakebase AsyncCheckpointSaver, falls back to InMemorySaver.
+async def stm_startup() -> None:
+    """Open AsyncCheckpointSaver pool, create tables, compile graph.
 
-    InMemorySaver implements both sync and async methods, so it's a safe fallback
-    when called from async contexts via graph.ainvoke/astream.
+    Called once from the ASGI app's on_startup. Respects the library contract:
+    enters the saver's async context manager so the underlying LakebasePool is
+    opened and checkpoint tables are created before any traffic hits the graph.
+    On failure, fails fast in production so the worker refuses to serve with a
+    silent in-memory saver.
     """
-    global _stm_checkpointer, _stm_lock
-    if _stm_checkpointer is not None:
-        return _stm_checkpointer
-    if _stm_lock is None:
-        _stm_lock = asyncio.Lock()
-    async with _stm_lock:
-        if _stm_checkpointer is not None:
-            return _stm_checkpointer
-        try:
-            from databricks_langchain import AsyncCheckpointSaver
+    global _stm_saver, _stm_stack, _stm_ready
+    _stm_stack = AsyncExitStack()
+    try:
+        from databricks_langchain import AsyncCheckpointSaver
+        if settings.LAKEBASE_MODE == "autoscaling":
             logger.info(
-                f"STM: Attempting AsyncCheckpointSaver | "
+                f"STM: opening AsyncCheckpointSaver | mode=autoscaling "
                 f"project={settings.LAKEBASE_PROJECT} branch={settings.LAKEBASE_BRANCH}"
             )
-            cp = AsyncCheckpointSaver(
+            saver_cm = AsyncCheckpointSaver(
                 project=settings.LAKEBASE_PROJECT,
                 branch=settings.LAKEBASE_BRANCH,
             )
-            logger.info("STM: AsyncCheckpointSaver created, calling setup()...")
-            setup_result = cp.setup()
-            if asyncio.iscoroutine(setup_result):
-                await setup_result
-            _stm_checkpointer = cp
-            logger.info("STM: AsyncCheckpointSaver (Lakebase) initialized — persistent across restarts")
-        except Exception as e:
-            logger.error(
-                f"STM: AsyncCheckpointSaver FAILED — falling back to InMemorySaver (ephemeral)\n"
-                f"  project={settings.LAKEBASE_PROJECT}, branch={settings.LAKEBASE_BRANCH}\n"
-                f"  error_type={type(e).__name__}\n"
-                f"  error={e}",
-                exc_info=True,
+        else:
+            logger.info(
+                f"STM: opening AsyncCheckpointSaver | mode=provisioned "
+                f"instance={settings.LAKEBASE_INSTANCE_NAME}"
             )
-            _stm_checkpointer = InMemorySaver()
-    return _stm_checkpointer
+            saver_cm = AsyncCheckpointSaver(
+                instance_name=settings.LAKEBASE_INSTANCE_NAME,
+            )
+        _stm_saver = await _stm_stack.enter_async_context(saver_cm)
+        get_compiled_graph(checkpointer=_stm_saver)
+        _stm_ready = True
+        logger.info("STM: AsyncCheckpointSaver lifecycle entered — pool open, tables ready")
+    except Exception as e:
+        await _stm_stack.aclose()
+        _stm_stack = None
+        if LAKEBASE_ALLOW_INMEMORY_FALLBACK:
+            logger.warning(
+                f"STM: Lakebase init failed, falling back to InMemorySaver (dev only) | "
+                f"error_type={type(e).__name__} error={e}"
+            )
+            _stm_saver = InMemorySaver()
+            get_compiled_graph(checkpointer=_stm_saver)
+            _stm_ready = True
+        else:
+            logger.exception("STM: startup FAILED — refusing to serve (set LAKEBASE_ALLOW_INMEMORY_FALLBACK=true for dev)")
+            raise
+
+
+async def stm_shutdown() -> None:
+    """Close pool cleanly on app shutdown."""
+    global _stm_stack, _stm_ready
+    _stm_ready = False
+    if _stm_stack is not None:
+        await _stm_stack.aclose()
+        _stm_stack = None
+        logger.info("STM: AsyncCheckpointSaver lifecycle exited — pool closed")
+
+
+# ── LTM store — startup-owned lifecycle (graceful-fail, non-blocking) ──
+_ltm_manager = LTMManager()
+_ltm_ready: bool = False
+_ltm_stack: "AsyncExitStack | None" = None
+
+
+async def ltm_startup() -> None:
+    """Open AsyncDatabricksStore pool, create tables, attach to LTMManager.
+
+    Per the upstream contract (databricks_langchain.store), the lifecycle is:
+    enter async context (opens pool) → call setup() (creates tables on the
+    now-open pool). Doing setup() before __aenter__ hits PoolClosed.
+
+    LTM is non-critical — on failure we log loudly and leave `_ltm_ready=False`
+    so read/write calls degrade to empty results. We do NOT crash the worker
+    (that's STM's job).
+    """
+    global _ltm_stack, _ltm_ready
+    _ltm_stack = AsyncExitStack()
+    mode = settings.LAKEBASE_MODE
+    project = settings.LAKEBASE_PROJECT
+    branch = settings.LAKEBASE_BRANCH
+    try:
+        from databricks_langchain import AsyncDatabricksStore
+        logger.info(
+            f"LTM: opening AsyncDatabricksStore | mode={mode} project={project} branch={branch} "
+            f"embedding={_ltm_manager.embedding_endpoint} dims={_ltm_manager.embedding_dims}"
+        )
+        if mode == "autoscaling":
+            store_cm = AsyncDatabricksStore(
+                project=project,
+                branch=branch,
+                embedding_endpoint=_ltm_manager.embedding_endpoint,
+                embedding_dims=_ltm_manager.embedding_dims,
+                embedding_fields=["$.query", "$.finding"],
+            )
+        else:
+            store_cm = AsyncDatabricksStore(
+                instance_name=_ltm_manager.instance_name,
+                embedding_endpoint=_ltm_manager.embedding_endpoint,
+                embedding_dims=_ltm_manager.embedding_dims,
+                embedding_fields=["$.query", "$.finding"],
+            )
+        store = await _ltm_stack.enter_async_context(store_cm)
+        logger.info("LTM: async context entered — pool open; calling setup() to create/verify tables...")
+        await store.setup()
+        _ltm_manager.attach_store(store)
+        _ltm_ready = True
+        logger.info("LTM: AsyncDatabricksStore lifecycle entered — pool open, tables ready")
+        logger.info(
+            "RESOURCE_POOLS: STM+LTM use databricks_langchain defaults "
+            "(~10-20 conns shared) | insight step_timeout=45s total=120s | "
+            "safe sustained concurrency ~3-5 requests; tail above that queues on pool"
+        )
+    except Exception as e:
+        await _ltm_stack.aclose()
+        _ltm_stack = None
+        _ltm_ready = False
+        logger.error(
+            f"LTM: startup FAILED — agent will serve without LTM (reads return empty)\n"
+            f"  mode={mode} project={project} branch={branch}\n"
+            f"  error_type={type(e).__name__} error={e}",
+            exc_info=True,
+        )
+
+
+async def ltm_shutdown() -> None:
+    """Close LTM pool cleanly on app shutdown."""
+    global _ltm_stack, _ltm_ready
+    _ltm_ready = False
+    if _ltm_stack is not None:
+        await _ltm_stack.aclose()
+        _ltm_stack = None
+        logger.info("LTM: AsyncDatabricksStore lifecycle exited — pool closed")
 logging.basicConfig(level=settings.LOG_LEVEL, format="%(asctime)s | %(name)s | %(levelname)s | %(message)s")
 
 # ── Setup MLflow experiment ──
@@ -107,10 +211,10 @@ logger.info(f"AGENT.startup: MLFLOW_EXPERIMENT_ID={os.environ.get('MLFLOW_EXPERI
 logger.info(f"AGENT.startup: DATABRICKS_HOST={os.environ.get('DATABRICKS_HOST', 'NOT SET')}")
 
 try:
-    mlflow.langchain.autolog()
-    logger.info("AGENT.startup: mlflow.langchain.autolog() OK")
+    mlflow.langchain.autolog(disable=False)
+    logger.info("AGENT.startup: mlflow.langchain.autolog(disable=False) OK")
 except Exception as e:
-    logger.error(f"AGENT.startup: mlflow.langchain.autolog() FAILED: {e}")
+    logger.error(f"AGENT.startup: mlflow.langchain.autolog(disable=False) FAILED: {e}")
 
 EXPERIMENT_NAME = os.environ.get(
     "MLFLOW_EXPERIMENT_NAME",
@@ -237,12 +341,12 @@ def _build_custom_outputs(
     }
 
 
-# ── Status event labels for Genie poll statuses ──
+# ── Status event labels (user-facing, outcome-oriented, no internal terminology) ──
 GENIE_STATUS_LABELS = {
     "FILTERING_CONTEXT": "Understanding your question...",
-    "ASKING_AI": "Formulating the query...",
-    "PENDING_WAREHOUSE": "Querying the database...",
-    "EXECUTING_QUERY": "Running the query...",
+    "ASKING_AI": "Preparing your analysis...",
+    "PENDING_WAREHOUSE": "Retrieving the data...",
+    "EXECUTING_QUERY": "Retrieving the data...",
 }
 
 
@@ -290,15 +394,53 @@ def _build_heartbeat_event() -> ResponsesAgentStreamEvent:
     )
 
 
+# Soft wall-clock budget — sits just below the LongRunningAgentServer hard
+# ceiling (task_timeout_seconds=900s in start_server.py) so we can emit a
+# graceful partial-response frame before the server cancels the background
+# task. The Databricks App edge proxy's 120s HTTP-stream cap is already
+# handled by the long-running / reconnect pattern: the task runs as
+# asyncio.create_task, events are persisted to Lakebase, and clients tail
+# GET /responses/{id}?stream=true&starting_after=<seq> after a disconnect.
+# Do NOT set this near 120s — that re-creates the very problem long-running
+# mode was introduced to solve.
+STREAM_WATCHDOG_BUDGET_S = 870.0
+
+
+def _build_watchdog_timeout_event(custom_inputs) -> ResponsesAgentStreamEvent:
+    """Build a user-facing timeout frame when the wall-clock budget runs out."""
+    msg = (
+        "Your query exceeded the maximum processing time for a single run. "
+        "Please narrow the date range or split it into smaller questions and I'll have another go."
+    )
+    wd_id = f"wd_{uuid.uuid4().hex[:12]}"
+    items = [{"type": "text", "id": str(uuid.uuid4()), "value": msg}]
+    co = build_custom_outputs(custom_inputs, "VEF9O1SFFR", "observation")
+    co["type"] = "WATCHDOG_TIMEOUT"
+    return ResponsesAgentStreamEvent(
+        type="response.output_item.done",
+        item_id=wd_id,
+        output_index=0,
+        item={
+            "type": "message",
+            "id": wd_id,
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": json.dumps({"items": [items], "custom_outputs": co})}],
+        },
+        custom_outputs=co,
+    )
+
+
 class CoMarketerAgent(ResponsesAgent):
     """ResponsesAgent subclass — routes /invocations to predict() or predict_stream()."""
 
     def __init__(self):
         super().__init__()
         # LTM manager (initialized once, reused across all requests)
-        self.ltm = LTMManager()
+        self.ltm = _ltm_manager
 
-    @mlflow.trace(name="comarketer_invoke")
+    # NOTE: No @mlflow.trace here — mlflow.langchain.autolog() at module scope
+    # auto-traces predict() on ResponsesAgent. Adding the decorator creates a
+    # duplicate nested root span. (Skill: mlflow3-skill → "duplicate spans".)
     async def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
         """Non-streaming handler. Resolves auth, runs graph, returns response."""
         request_id = str(uuid.uuid4())
@@ -471,7 +613,9 @@ class CoMarketerAgent(ResponsesAgent):
                     "user_name": custom_inputs.user_name,
                 })
 
-                graph = get_compiled_graph(checkpointer=await _get_stm_checkpointer())
+                if not _stm_ready:
+                    raise RuntimeError("STM not ready — refusing request")
+                graph = get_compiled_graph()
 
                 thread_id = custom_inputs.thread_id or custom_inputs.conversation_id or request_id
                 invoke_config = {
@@ -571,8 +715,10 @@ class CoMarketerAgent(ResponsesAgent):
                 "conversation_id": custom_inputs.conversation_id or request_id,
             }
 
-            # Genie agent output (only for data_query requests)
-            if result and result.get("intent") == "data_query":
+            # Genie tags — per-key guards below already skip empty values, so
+            # no outer intent gate. This ensures tags flow regardless of the
+            # taxonomy string chosen by IntentClassifier.
+            if result:
                 genie_trace_id = result.get("genie_trace_id", "")
                 if genie_trace_id:
                     result_tags["genie_trace_id"] = str(genie_trace_id)
@@ -694,6 +840,8 @@ class CoMarketerAgent(ResponsesAgent):
           2. Response event (after graph, observation custom_outputs, {items:[...]} JSON body)
         """
         request_id = str(uuid.uuid4())
+        stream_start = time.monotonic()
+        watchdog_fired = False
         logger.info(f"AGENT.stream: ── REQUEST START | request_id={request_id} ──")
 
         # Capture MLflow trace_id from the auto-applied @mlflow.trace span.
@@ -798,6 +946,27 @@ class CoMarketerAgent(ResponsesAgent):
                 pass
             return
 
+        # ── Early frame: signals an active stream to client and proxy within 1s,
+        #    before any LLM call or LTM read. Happens on every non-greeting path.
+        try:
+            recv_id = f"recv_{uuid.uuid4().hex[:12]}"
+            recv_co = build_custom_outputs(custom_inputs, "VEF9O1SFFR", "RATIONALE")
+            recv_co["type"] = "STREAM_OPEN"
+            yield ResponsesAgentStreamEvent(
+                type="response.output_item.done",
+                item_id=recv_id,
+                output_index=0,
+                item={
+                    "type": "message",
+                    "id": recv_id,
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": json.dumps({"items": [], "custom_outputs": recv_co})}],
+                },
+                custom_outputs=recv_co,
+            )
+        except Exception as e:
+            logger.warning(f"AGENT.stream: early frame failed (non-fatal): {e}")
+
         # ── Yield acknowledgment FIRST (before graph, zero latency to user) ──
         if sp_token:
             try:
@@ -884,7 +1053,9 @@ class CoMarketerAgent(ResponsesAgent):
                     "user_name": custom_inputs.user_name,
                 })
 
-                graph = get_compiled_graph(checkpointer=await _get_stm_checkpointer())
+                if not _stm_ready:
+                    raise RuntimeError("STM not ready — refusing request")
+                graph = get_compiled_graph()
 
                 thread_id = custom_inputs.thread_id or custom_inputs.conversation_id or request_id
                 invoke_config = {
@@ -947,23 +1118,119 @@ class CoMarketerAgent(ResponsesAgent):
 
                 logger.info(f"AGENT.stream: graph.astream() starting | request_id={request_id} | thread_id={thread_id} | history_msgs={len(existing_msgs)}")
 
-                table_already_sent = False  # Track if table was sent via StreamWriter
-                worker_tables_sent = set()  # Track which worker tables were sent via StreamWriter
+                # Section ranks for ordering telemetry + slow-path deduplication.
+                # thought (0) → plan (1) → table (2) → analysis (3) → recommendation (4).
+                #
+                # The old gate dropped any event whose rank was lower than the
+                # current max, which suppressed legitimate late-arriving
+                # tables when analysis emitted first. That behaviour is gone:
+                # streaming is now a first-class execution primitive and
+                # _mark() never drops.
+                #
+                # Deduplication (so the synthesizer fallback doesn't
+                # re-emit what the fast path already streamed) is done per
+                # section via emitted_sections, and per-step via
+                # emitted_step_tables / worker_tables_sent so multi-step
+                # plans still stream multiple tables incrementally.
+                SECTION_THOUGHT = 0
+                SECTION_PLAN = 1
+                SECTION_TABLE = 2
+                SECTION_ANALYSIS = 3
+                SECTION_RECOMMENDATION = 4
+                section_state = {"rank": -1}
+                emitted_sections: set[int] = set()
+                emitted_step_tables: set[int] = set()
+                worker_tables_sent: set[int] = set()
 
-                async for chunk in graph.astream(initial_state, config=invoke_config,
-                                                 stream_mode=["updates", "custom"]):
+                def _mark(rank: int, label: str = "") -> bool:
+                    """Forward-only rank tracker. Never drops.
+
+                    Records the max rank seen so out-of-order emissions show
+                    up in debug logs (useful when triaging UI layout bugs),
+                    but always returns True so the caller yields the event.
+                    """
+                    if rank < section_state["rank"]:
+                        logger.debug(
+                            f"AGENT.stream: out-of-order emission | label={label} rank={rank} current={section_state['rank']} | request_id={request_id}"
+                        )
+                    section_state["rank"] = max(section_state["rank"], rank)
+                    return True
+
+                # Time-gated watchdog via parallel task — fires even if graph.astream
+                # is blocked inside a single node for the full budget.
+                _chunks_q: asyncio.Queue = asyncio.Queue()
+                _Q_DONE = object()
+                _Q_TIMEOUT = object()
+
+                async def _graph_consumer():
+                    try:
+                        async for _c in graph.astream(initial_state, config=invoke_config,
+                                                      stream_mode=["updates", "custom"]):
+                            await _chunks_q.put(_c)
+                    except Exception as _e:
+                        await _chunks_q.put(_e)
+                    finally:
+                        await _chunks_q.put(_Q_DONE)
+
+                async def _watchdog_timer():
+                    try:
+                        await asyncio.sleep(
+                            max(0.0, STREAM_WATCHDOG_BUDGET_S - (time.monotonic() - stream_start))
+                        )
+                        await _chunks_q.put(_Q_TIMEOUT)
+                    except asyncio.CancelledError:
+                        pass
+
+                _graph_task = asyncio.create_task(_graph_consumer())
+                _wd_task = asyncio.create_task(_watchdog_timer())
+
+                while True:
+                    item = await _chunks_q.get()
+                    if item is _Q_DONE:
+                        break
+                    if item is _Q_TIMEOUT:
+                        logger.warning(
+                            "AGENT.stream: WATCHDOG fired at %.1fs (budget=%.1fs) | request_id=%s",
+                            time.monotonic() - stream_start, STREAM_WATCHDOG_BUDGET_S, request_id,
+                        )
+                        yield _build_watchdog_timeout_event(custom_inputs)
+                        watchdog_fired = True
+                        break
+                    if isinstance(item, Exception):
+                        _wd_task.cancel()
+                        if not _graph_task.done():
+                            _graph_task.cancel()
+                        raise item
+                    chunk = item
                     mode, data = chunk  # tuple when multiple stream modes
 
                     # ── Mid-node custom events (StreamWriter) ──
                     if mode == "custom":
                         event_type = data.get("event_type", "") if isinstance(data, dict) else ""
 
-                        # Simple path: table from genie_data StreamWriter
+                        # Simple path: table from genie_data StreamWriter.
+                        # Per-step deduplication via step_id — multi-step plans
+                        # stream multiple tables, but retries don't re-emit.
                         if event_type == "table_ready":
                             table_data = data.get("table")
-                            if isinstance(table_data, dict) and table_data.get("data"):
-                                table_items = [{"type": "table", "id": str(uuid.uuid4()), "value": table_data}]
-                                t_id = f"table_{uuid.uuid4().hex[:12]}"
+                            step_id = data.get("step_id")
+                            already_streamed = (
+                                isinstance(step_id, int) and step_id in emitted_step_tables
+                            )
+                            has_renderable_shape = (
+                                isinstance(table_data, dict)
+                                and bool(table_data.get("tableHeaders"))
+                            )
+                            if has_renderable_shape and not already_streamed:
+                                _mark(SECTION_TABLE, "table_ready")
+                                title = data.get("title") or ""
+                                table_items = [{
+                                    "type": "table",
+                                    "id": str(uuid.uuid4()),
+                                    "value": table_data,
+                                    "name": title or "table",
+                                }]
+                                t_id = data.get("item_id") or f"table_{uuid.uuid4().hex[:12]}"
                                 table_co = build_custom_outputs(custom_inputs, "ZECDLGGP3J", "observation")
                                 yield ResponsesAgentStreamEvent(
                                     type="response.output_item.done",
@@ -977,8 +1244,10 @@ class CoMarketerAgent(ResponsesAgent):
                                     },
                                     custom_outputs=table_co,
                                 )
-                                table_already_sent = True
-                                logger.info(f"AGENT.stream: TABLE emitted (mid-node via StreamWriter) | request_id={request_id}")
+                                emitted_sections.add(SECTION_TABLE)
+                                if isinstance(step_id, int):
+                                    emitted_step_tables.add(step_id)
+                                logger.info(f"AGENT.stream: TABLE emitted (mid-node via StreamWriter) | item_id={t_id} step_id={step_id} | request_id={request_id}")
 
                         # Complex path: plan from planner StreamWriter
                         elif event_type == "plan_ready":
@@ -986,7 +1255,7 @@ class CoMarketerAgent(ResponsesAgent):
                             # Legacy schema (supervisor planner): data["plan"] = [{sub_question}, ...]
                             plan_steps = data.get("steps") or data.get("plan") or []
                             plan_count = data.get("plan_count", len(plan_steps))
-                            if plan_steps:
+                            if plan_steps and SECTION_PLAN not in emitted_sections and _mark(SECTION_PLAN, "plan_ready"):
                                 def _step_label(i, p):
                                     if isinstance(p, dict):
                                         return p.get("query") or p.get("sub_question") or ""
@@ -994,11 +1263,8 @@ class CoMarketerAgent(ResponsesAgent):
                                 plan_text = f"I'll analyze this from {plan_count} angles:\n" + "\n".join(
                                     f"  {i+1}. {_step_label(i, p)}" for i, p in enumerate(plan_steps)
                                 )
-                                budget = data.get("budget")
-                                if budget:
-                                    plan_text += f"\n(budget: {budget})"
-                                p_id = f"plan_{uuid.uuid4().hex[:12]}"
-                                p_items = [{"type": "text", "id": str(uuid.uuid4()), "value": plan_text}]
+                                p_id = data.get("item_id") or f"plan_{uuid.uuid4().hex[:12]}"
+                                p_items = [{"type": "text", "id": str(uuid.uuid4()), "value": plan_text, "name": "plan"}]
                                 plan_co = build_custom_outputs(custom_inputs, "VEF9O1SFFR", "observation")
                                 yield ResponsesAgentStreamEvent(
                                     type="response.output_item.done",
@@ -1012,13 +1278,23 @@ class CoMarketerAgent(ResponsesAgent):
                                     },
                                     custom_outputs=plan_co,
                                 )
+                                emitted_sections.add(SECTION_PLAN)
                                 logger.info(f"AGENT.stream: PLAN emitted | count={plan_count} | request_id={request_id}")
 
-                        # Complex path: worker table from genie_worker StreamWriter
+                        # Complex path: worker table from genie_worker StreamWriter.
+                        # Per-worker dedup via worker_tables_sent — multiple
+                        # workers stream multiple tables, but duplicates from
+                        # the updates-mode fallback are skipped.
                         elif event_type == "worker_table_ready":
                             w_idx = data.get("worker_index", -1)
                             table_data = data.get("table")
-                            if isinstance(table_data, dict) and table_data.get("data"):
+                            already_streamed = w_idx in worker_tables_sent
+                            has_renderable_shape = (
+                                isinstance(table_data, dict)
+                                and bool(table_data.get("tableHeaders"))
+                            )
+                            if has_renderable_shape and not already_streamed:
+                                _mark(SECTION_TABLE, f"worker_table_ready[{w_idx}]")
                                 wt_items = [{"type": "table", "id": str(uuid.uuid4()), "value": table_data}]
                                 wt_id = f"wtable_{w_idx}_{uuid.uuid4().hex[:8]}"
                                 wt_co = build_custom_outputs(custom_inputs, "ZECDLGGP3J", "observation")
@@ -1035,6 +1311,7 @@ class CoMarketerAgent(ResponsesAgent):
                                     custom_outputs=wt_co,
                                 )
                                 worker_tables_sent.add(w_idx)
+                                emitted_sections.add(SECTION_TABLE)
                                 logger.info(f"AGENT.stream: WORKER TABLE emitted | worker={w_idx} | request_id={request_id}")
 
                         # ── Transient status events (genie poll + node start) ──
@@ -1043,16 +1320,17 @@ class CoMarketerAgent(ResponsesAgent):
                             # New boundary-phase flow (tool_handler): phase in {"start","done"}
                             if phase in ("start", "done"):
                                 if phase == "start":
-                                    label = data.get("message") or "Fetching data..."
+                                    label = data.get("message") or "Retrieving the data..."
                                 else:
                                     rows = data.get("rows")
                                     status = data.get("status")
                                     if isinstance(rows, int):
-                                        label = f"Received {rows:,} rows"
-                                    elif status:
-                                        label = f"Fetch {status}"
+                                        label = f"Data ready ({rows:,} records)"
+                                    elif status and str(status).lower() == "success":
+                                        label = "Data ready"
                                     else:
-                                        label = "Fetch complete"
+                                        label = "Data retrieval complete"
+                                _mark(SECTION_THOUGHT, f"genie_status:{phase}")
                                 yield _build_status_event(label, custom_inputs, agent_id="ZECDLGGP3J", request_id=request_id)
                                 logger.debug(f"AGENT.stream: STATUS emitted | genie_phase={phase} | request_id={request_id}")
                             else:
@@ -1062,29 +1340,171 @@ class CoMarketerAgent(ResponsesAgent):
                                     w_idx = data.get("worker_index")
                                     if w_idx is not None:
                                         label = f"Worker {w_idx + 1}: {label}"
+                                    _mark(SECTION_THOUGHT, "genie_status:legacy")
                                     yield _build_status_event(label, custom_inputs, agent_id="ZECDLGGP3J", request_id=request_id)
                                     logger.debug(f"AGENT.stream: STATUS emitted | genie={data.get('status')} | request_id={request_id}")
 
                         elif event_type == "phase_progress":
                             phase = data.get("phase", "")
                             if phase == "interpret":
-                                n = data.get("insights")
-                                label = f"Interpreting results ({n} insights)..." if isinstance(n, int) else "Interpreting results..."
+                                label = "Interpreting the findings..."
                             elif phase == "recommend":
-                                n = data.get("recs")
-                                label = f"Drafting recommendations ({n})..." if isinstance(n, int) else "Drafting recommendations..."
+                                label = "Preparing strategic recommendations..."
                             elif phase == "reflect":
-                                rewritten = data.get("rewritten")
-                                label = "Reflecting (rewrite applied)..." if rewritten else "Reflecting..."
+                                label = "Validating the analysis..."
                             else:
-                                label = f"{phase}..." if phase else "Processing..."
+                                label = "Preparing your response..."
+                            _mark(SECTION_THOUGHT, f"phase_progress:{phase}")
                             yield _build_status_event(label, custom_inputs, agent_id="ZECDLGGP3J", request_id=request_id)
                             logger.debug(f"AGENT.stream: STATUS emitted | phase_progress={phase} | request_id={request_id}")
 
+                        elif event_type == "analysis_ready":
+                            summary = (data.get("summary") or "").strip()
+                            insights = [str(i).strip() for i in (data.get("insights") or []) if str(i).strip()]
+                            if (summary or insights) and SECTION_ANALYSIS not in emitted_sections and _mark(SECTION_ANALYSIS, "analysis_ready"):
+                                # Section J contract: `summary` carries the full user-facing
+                                # Markdown ("## What Did We Find?" + "## How have I arrived...")
+                                # for complex questions, or a one-liner for simple ones. Emit
+                                # it verbatim. Insights are raw bullets kept for downstream
+                                # reflector/memory — only rendered as a fallback when the
+                                # interpreter returned no summary at all.
+                                if summary:
+                                    analysis_text = summary
+                                else:
+                                    analysis_text = "\n".join(f"- {i}" for i in insights)
+                                a_items = [{
+                                    "type": "text",
+                                    "id": str(uuid.uuid4()),
+                                    "value": analysis_text,
+                                    "name": "analysis",
+                                }]
+                                a_id = data.get("item_id") or f"analysis_{uuid.uuid4().hex[:12]}"
+                                a_co = build_custom_outputs(custom_inputs, "ZECDLGGP3J", "observation")
+                                yield ResponsesAgentStreamEvent(
+                                    type="response.output_item.done",
+                                    item_id=a_id,
+                                    output_index=0,
+                                    item={
+                                        "type": "message",
+                                        "id": a_id,
+                                        "role": "assistant",
+                                        "content": [{"type": "output_text", "text": json.dumps({"items": [a_items], "custom_outputs": a_co})}],
+                                    },
+                                    custom_outputs=a_co,
+                                )
+                                emitted_sections.add(SECTION_ANALYSIS)
+                                logger.info(f"AGENT.stream: ANALYSIS emitted | insights={len(insights)} | request_id={request_id}")
+
+                        elif event_type == "recommendations_ready":
+                            recs = data.get("recommendations") or []
+                            nudge_text = (data.get("nudge") or "").strip()
+                            # Section J grouping: Apply / Avoid / Explore with per-rec
+                            # [Action] / Evidence / Impact triplet, followed by the
+                            # Contextual Nudge. Keep legacy bullet rendering as a fallback
+                            # only when no category is present on any rec (shouldn't
+                            # happen post-migration but guards old state).
+                            valid_recs = [r for r in recs if isinstance(r, dict) and str(r.get("action", "")).strip()]
+                            has_category = any((r.get("category") or "").strip().lower() in ("apply", "avoid", "explore") for r in valid_recs)
+
+                            rec_blocks: list[str] = []
+                            if valid_recs and has_category:
+                                bucket_headers = [
+                                    ("apply", "#### ✅ Apply"),
+                                    ("avoid", "#### ❌ Avoid"),
+                                    ("explore", "#### 🔍 Explore"),
+                                ]
+                                for cat, header in bucket_headers:
+                                    bucket = [r for r in valid_recs if (r.get("category") or "").strip().lower() == cat]
+                                    if not bucket:
+                                        continue
+                                    section_lines: list[str] = [header, ""]
+                                    for r in bucket:
+                                        action = str(r.get("action", "")).strip()
+                                        detail = str(r.get("detail", "")).strip()
+                                        evidence = str(r.get("evidence", "")).strip()
+                                        impact = str(r.get("expected_impact", "")).strip()
+                                        section_lines.append(f"**[{action}]:** {detail}" if detail else f"**[{action}]:**")
+                                        if evidence:
+                                            section_lines.append(f"**Evidence:** {evidence}")
+                                        if impact:
+                                            section_lines.append(f"**Impact:** {impact}")
+                                        section_lines.append("")
+                                    rec_blocks.append("\n".join(section_lines).rstrip())
+                            elif valid_recs:
+                                # Legacy fallback: no categories — render as a plain list.
+                                lines = []
+                                for r in valid_recs:
+                                    action = str(r.get("action", "")).strip()
+                                    detail = str(r.get("detail", "")).strip()
+                                    lines.append(f"- {action}: {detail}" if detail else f"- {action}")
+                                rec_blocks.append("\n".join(lines))
+
+                            if nudge_text:
+                                rec_blocks.append(f"---\n\n{nudge_text}")
+
+                            recommendations_text = "\n\n".join(b for b in rec_blocks if b)
+                            if recommendations_text and SECTION_RECOMMENDATION not in emitted_sections and _mark(SECTION_RECOMMENDATION, "recommendations_ready"):
+                                r_items = [{
+                                    "type": "text",
+                                    "id": str(uuid.uuid4()),
+                                    "value": recommendations_text,
+                                    "name": "recommendations",
+                                }]
+                                r_id = data.get("item_id") or f"recs_{uuid.uuid4().hex[:12]}"
+                                r_co = build_custom_outputs(custom_inputs, "ZECDLGGP3J", "observation")
+                                yield ResponsesAgentStreamEvent(
+                                    type="response.output_item.done",
+                                    item_id=r_id,
+                                    output_index=0,
+                                    item={
+                                        "type": "message",
+                                        "id": r_id,
+                                        "role": "assistant",
+                                        "content": [{"type": "output_text", "text": json.dumps({"items": [r_items], "custom_outputs": r_co})}],
+                                    },
+                                    custom_outputs=r_co,
+                                )
+                                emitted_sections.add(SECTION_RECOMMENDATION)
+                                logger.info(f"AGENT.stream: RECOMMENDATIONS emitted | recs={len(valid_recs)} nudge={bool(nudge_text)} | request_id={request_id}")
+
                         elif event_type == "chart_ready":
-                            if not data.get("skipped"):
+                            spec = data.get("chart_spec")
+                            skipped = bool(data.get("skipped"))
+                            # Visualization is MANDATORY whenever the builder
+                            # produced a valid spec — the monotonic section
+                            # gate must not drop it even if ANALYSIS /
+                            # RECOMMENDATIONS have already advanced the rank.
+                            # We still bump the rank forward (never back) so
+                            # subsequent events remain ordered.
+                            if not skipped and isinstance(spec, dict) and spec:
+                                section_state["rank"] = max(
+                                    section_state["rank"], SECTION_TABLE
+                                )
+                                c_items = [{
+                                    "type": "chart",
+                                    "id": str(uuid.uuid4()),
+                                    "value": spec,
+                                    "name": "chart",
+                                }]
+                                c_id = data.get("item_id") or f"chart_{uuid.uuid4().hex[:12]}"
+                                c_co = build_custom_outputs(custom_inputs, "ZECDLGGP3J", "observation")
+                                yield ResponsesAgentStreamEvent(
+                                    type="response.output_item.done",
+                                    item_id=c_id,
+                                    output_index=0,
+                                    item={
+                                        "type": "message",
+                                        "id": c_id,
+                                        "role": "assistant",
+                                        "content": [{"type": "output_text", "text": json.dumps({"items": [c_items], "custom_outputs": c_co})}],
+                                    },
+                                    custom_outputs=c_co,
+                                )
+                                logger.info(f"AGENT.stream: CHART emitted | type={data.get('chart_type')} | request_id={request_id}")
+                            elif not skipped:
                                 ct = data.get("chart_type") or "chart"
-                                yield _build_status_event(f"Chart ready ({ct})", custom_inputs, agent_id="ZECDLGGP3J", request_id=request_id)
+                                _mark(SECTION_THOUGHT, f"chart_status:{ct}")
+                                yield _build_status_event("Visualization ready", custom_inputs, agent_id="ZECDLGGP3J", request_id=request_id)
                                 logger.debug(f"AGENT.stream: STATUS emitted | chart_type={ct} | request_id={request_id}")
                             # When skipped=True, emit nothing (keeps the stream quiet for non-chartable queries)
 
@@ -1093,6 +1513,7 @@ class CoMarketerAgent(ResponsesAgent):
                             node = data.get("node", "")
                             # Genie/insight work → ZECDLGGP3J; supervisor/coordinator work → VEF9O1SFFR
                             aid = "ZECDLGGP3J" if node in ("genie_analysis", "synthesizer", "campaign_insight_agent") else "VEF9O1SFFR"
+                            _mark(SECTION_THOUGHT, f"node_started:{node}")
                             yield _build_status_event(message, custom_inputs, agent_id=aid, request_id=request_id)
                             logger.debug(f"AGENT.stream: STATUS emitted | node={node} | agent_id={aid} | request_id={request_id}")
 
@@ -1115,24 +1536,50 @@ class CoMarketerAgent(ResponsesAgent):
                             continue
 
                         # ── supervisor_synthesize: yield final response_items (text/table/chart) ──
+                        # Split by section rank so table/narrative/recommendations emit in strict order,
+                        # otherwise a bundled event would bypass the gate.
                         if node_name == "supervisor_synthesize":
                             synth_items = node_data.get("response_items") or []
                             if synth_items:
-                                ss_id = f"synth_{uuid.uuid4().hex[:12]}"
-                                ss_co = build_custom_outputs(custom_inputs, "VEF9O1SFFR", "observation")
-                                yield ResponsesAgentStreamEvent(
-                                    type="response.output_item.done",
-                                    item_id=ss_id,
-                                    output_index=0,
-                                    item={
-                                        "type": "message",
-                                        "id": ss_id,
-                                        "role": "assistant",
-                                        "content": [{"type": "output_text", "text": json.dumps({"items": [synth_items], "custom_outputs": ss_co})}],
-                                    },
-                                    custom_outputs=ss_co,
-                                )
-                                logger.info(f"AGENT.stream: SYNTHESIZE yielded | items={len(synth_items)} | request_id={request_id}")
+                                def _rank_for(it):
+                                    t = it.get("type")
+                                    n = (it.get("name") or "").lower()
+                                    if t in ("table", "chart"):
+                                        return SECTION_TABLE
+                                    if t == "text" and n == "recommendations":
+                                        return SECTION_RECOMMENDATION
+                                    return SECTION_ANALYSIS  # narrative / summary / unnamed text
+
+                                buckets: dict[int, list] = {}
+                                for it in synth_items:
+                                    buckets.setdefault(_rank_for(it), []).append(it)
+
+                                for rank in sorted(buckets.keys()):
+                                    group = buckets[rank]
+                                    if not group:
+                                        continue
+                                    # Idempotent fallback: skip sections the
+                                    # fast path already streamed.
+                                    if rank in emitted_sections:
+                                        logger.debug(f"AGENT.stream: SYNTHESIZE skipped | rank={rank} already streamed | request_id={request_id}")
+                                        continue
+                                    _mark(rank, f"synth.rank{rank}")
+                                    ss_id = f"synth_{rank}_{uuid.uuid4().hex[:10]}"
+                                    ss_co = build_custom_outputs(custom_inputs, "VEF9O1SFFR", "observation")
+                                    yield ResponsesAgentStreamEvent(
+                                        type="response.output_item.done",
+                                        item_id=ss_id,
+                                        output_index=0,
+                                        item={
+                                            "type": "message",
+                                            "id": ss_id,
+                                            "role": "assistant",
+                                            "content": [{"type": "output_text", "text": json.dumps({"items": [group], "custom_outputs": ss_co})}],
+                                        },
+                                        custom_outputs=ss_co,
+                                    )
+                                    emitted_sections.add(rank)
+                                    logger.info(f"AGENT.stream: SYNTHESIZE yielded | rank={rank} items={len(group)} | request_id={request_id}")
                             continue
 
                         # ── out_of_scope: yield canned response_items ──
@@ -1194,22 +1641,25 @@ class CoMarketerAgent(ResponsesAgent):
                                 custom_outputs=c_co,
                             )
 
-                        # ── genie_data: stream table (table may already be sent via StreamWriter) ──
+                        # ── genie_data: idempotent fallback ──
+                        # Skip entirely if the fast path already streamed a
+                        # table. Otherwise emit whatever the node produced.
                         elif node_name == "genie_data":
+                            if SECTION_TABLE in emitted_sections:
+                                logger.debug(f"AGENT.stream: genie_data fallback skipped | table already streamed | request_id={request_id}")
+                                continue
                             data_items = []
-
-                            # Fallback: send table here ONLY if StreamWriter didn't fire
-                            if not table_already_sent:
-                                genie_tables = node_data.get("genie_tables") or []
-                                for table_2d in genie_tables:
-                                    if isinstance(table_2d, dict) and table_2d.get("data"):
-                                        data_items.append({
-                                            "type": "table",
-                                            "id": str(uuid.uuid4()),
-                                            "value": table_2d,
-                                        })
+                            genie_tables = node_data.get("genie_tables") or []
+                            for table_2d in genie_tables:
+                                if isinstance(table_2d, dict) and table_2d.get("data"):
+                                    data_items.append({
+                                        "type": "table",
+                                        "id": str(uuid.uuid4()),
+                                        "value": table_2d,
+                                    })
 
                             if data_items:
+                                _mark(SECTION_TABLE, "genie_data.fallback")
                                 d_id = f"data_{uuid.uuid4().hex[:12]}"
                                 data_co = build_custom_outputs(custom_inputs, "ZECDLGGP3J", "observation")
                                 yield ResponsesAgentStreamEvent(
@@ -1224,14 +1674,19 @@ class CoMarketerAgent(ResponsesAgent):
                                     },
                                     custom_outputs=data_co,
                                 )
+                                emitted_sections.add(SECTION_TABLE)
                                 logger.info(
                                     f"AGENT.stream: TABLE yielded (fallback) | request_id={request_id}"
                                 )
 
-                        # ── genie_analysis: stream LLM analysis summary ──
+                        # ── genie_analysis: idempotent fallback for analysis ──
                         elif node_name == "genie_analysis":
                             analysis_text = node_data.get("genie_summary", "")
-                            if analysis_text:
+                            if not analysis_text or SECTION_ANALYSIS in emitted_sections:
+                                if SECTION_ANALYSIS in emitted_sections:
+                                    logger.debug(f"AGENT.stream: genie_analysis fallback skipped | analysis already streamed | request_id={request_id}")
+                            else:
+                                _mark(SECTION_ANALYSIS, "genie_analysis")
                                 summary_items = [{"type": "text", "id": str(uuid.uuid4()), "value": analysis_text}]
                                 s_id = f"summary_{uuid.uuid4().hex[:12]}"
                                 summary_co = build_custom_outputs(custom_inputs, "ZECDLGGP3J", "observation")
@@ -1247,6 +1702,7 @@ class CoMarketerAgent(ResponsesAgent):
                                     },
                                     custom_outputs=summary_co,
                                 )
+                                emitted_sections.add(SECTION_ANALYSIS)
                                 logger.info(
                                     f"AGENT.stream: ANALYSIS yielded | summary={len(analysis_text)}ch | request_id={request_id}"
                                 )
@@ -1255,17 +1711,20 @@ class CoMarketerAgent(ResponsesAgent):
                         elif node_name == "planner":
                             continue
 
-                        # ── genie_worker: fallback table emit if StreamWriter missed ──
+                        # ── genie_worker: idempotent fallback ──
+                        # Per-worker dedup: skip workers whose tables already
+                        # streamed on the fast path.
                         elif node_name == "genie_worker":
                             w_results = node_data.get("worker_results") or []
                             for wr in w_results:
                                 w_idx = wr.get("worker_index", -1)
                                 if w_idx in worker_tables_sent:
-                                    continue  # Already sent via StreamWriter
+                                    continue
                                 if wr.get("error"):
-                                    continue  # Skip errored workers
+                                    continue
                                 for table_2d in wr.get("genie_tables", []):
                                     if isinstance(table_2d, dict) and table_2d.get("data"):
+                                        _mark(SECTION_TABLE, f"genie_worker.fallback[{w_idx}]")
                                         wf_items = [{"type": "table", "id": str(uuid.uuid4()), "value": table_2d}]
                                         wf_id = f"wfallback_{w_idx}_{uuid.uuid4().hex[:8]}"
                                         wf_co = build_custom_outputs(custom_inputs, "ZECDLGGP3J", "observation")
@@ -1281,12 +1740,14 @@ class CoMarketerAgent(ResponsesAgent):
                                             },
                                             custom_outputs=wf_co,
                                         )
+                                        worker_tables_sent.add(w_idx)
+                                        emitted_sections.add(SECTION_TABLE)
                                         logger.info(f"AGENT.stream: WORKER TABLE fallback | worker={w_idx} | request_id={request_id}")
 
-                        # ── synthesizer: stream synthesis summary text ──
+                        # ── synthesizer: idempotent fallback for analysis ──
                         elif node_name == "synthesizer":
                             synth_text = node_data.get("genie_summary", "")
-                            if synth_text:
+                            if synth_text and SECTION_ANALYSIS not in emitted_sections and _mark(SECTION_ANALYSIS, "synthesizer"):
                                 synth_items = [{"type": "text", "id": str(uuid.uuid4()), "value": synth_text}]
                                 sy_id = f"synthesis_{uuid.uuid4().hex[:12]}"
                                 synth_co = build_custom_outputs(custom_inputs, "ZECDLGGP3J", "observation")
@@ -1302,35 +1763,66 @@ class CoMarketerAgent(ResponsesAgent):
                                     },
                                     custom_outputs=synth_co,
                                 )
+                                emitted_sections.add(SECTION_ANALYSIS)
                                 logger.info(f"AGENT.stream: SYNTHESIS yielded | len={len(synth_text)}ch | request_id={request_id}")
 
                         # ── format_supervisor: stream recommendations + charts ──
+                        # Split by section rank — chart with table, narrative/analysis text with analysis,
+                        # recommendations text with recommendation — so the strict-order gate can enforce it.
                         elif node_name == "format_supervisor":
                             sup_json = node_data.get("supervisor_json", {})
                             all_items = sup_json.get("items", [])
-                            # Filter: only text (recommendations) + chart — tables already sent earlier
-                            analysis_items = [
+                            candidate_items = [
                                 it for it in all_items
                                 if it.get("type") in ("text", "chart", "collapsedText")
                             ]
 
-                            if analysis_items:
-                                a_id = f"analysis_{uuid.uuid4().hex[:12]}"
-                                analysis_co = build_custom_outputs(custom_inputs, "VEF9O1SFFR", "observation")
-                                yield ResponsesAgentStreamEvent(
-                                    type="response.output_item.done",
-                                    item_id=a_id,
-                                    output_index=0,
-                                    item={
-                                        "type": "message",
-                                        "id": a_id,
-                                        "role": "assistant",
-                                        "content": [{"type": "output_text", "text": json.dumps({"items": [analysis_items], "custom_outputs": analysis_co})}],
-                                    },
-                                    custom_outputs=analysis_co,
-                                )
-                                logger.info(f"AGENT.stream: RECOMMENDATIONS yielded | items={len(analysis_items)} | request_id={request_id}")
+                            if candidate_items:
+                                def _fs_rank(it):
+                                    t = it.get("type")
+                                    n = (it.get("name") or "").lower()
+                                    if t == "chart":
+                                        return SECTION_TABLE
+                                    if t == "text" and n == "recommendations":
+                                        return SECTION_RECOMMENDATION
+                                    # plain text, narrative, analysis, collapsedText → analysis
+                                    return SECTION_ANALYSIS
 
+                                fs_buckets: dict[int, list] = {}
+                                for it in candidate_items:
+                                    fs_buckets.setdefault(_fs_rank(it), []).append(it)
+
+                                for rank in sorted(fs_buckets.keys()):
+                                    group = fs_buckets[rank]
+                                    if not group:
+                                        continue
+                                    # Idempotent fallback: skip sections the
+                                    # fast path already streamed.
+                                    if rank in emitted_sections:
+                                        logger.debug(f"AGENT.stream: FORMAT_SUPERVISOR skipped | rank={rank} already streamed | request_id={request_id}")
+                                        continue
+                                    _mark(rank, f"format_supervisor.rank{rank}")
+                                    a_id = f"fs_{rank}_{uuid.uuid4().hex[:10]}"
+                                    analysis_co = build_custom_outputs(custom_inputs, "VEF9O1SFFR", "observation")
+                                    yield ResponsesAgentStreamEvent(
+                                        type="response.output_item.done",
+                                        item_id=a_id,
+                                        output_index=0,
+                                        item={
+                                            "type": "message",
+                                            "id": a_id,
+                                            "role": "assistant",
+                                            "content": [{"type": "output_text", "text": json.dumps({"items": [group], "custom_outputs": analysis_co})}],
+                                        },
+                                        custom_outputs=analysis_co,
+                                    )
+                                    emitted_sections.add(rank)
+                                    logger.info(f"AGENT.stream: FORMAT_SUPERVISOR yielded | rank={rank} items={len(group)} | request_id={request_id}")
+
+                # Cleanup watchdog + graph consumer tasks whatever path exited the loop.
+                _wd_task.cancel()
+                if not _graph_task.done():
+                    _graph_task.cancel()
                 logger.info(f"AGENT.stream: graph.astream() complete | request_id={request_id}")
 
             record.intent = accumulated.get("intent", "data_query")
@@ -1346,9 +1838,13 @@ class CoMarketerAgent(ResponsesAgent):
             record.agent_route = route_map.get(intent_val, "campaign_insight_agent")
             record.response_text = (accumulated.get("response_text") or accumulated.get("genie_summary", ""))[:2000]
             record.llm_call_count = accumulated.get("llm_call_count", 0)
-            record.status = "error" if accumulated.get("error") else "success"
-            if accumulated.get("error"):
-                record.error_message = str(accumulated["error"])[:500]
+            if watchdog_fired:
+                record.status = "timeout"
+                record.error_message = "watchdog fired at wall-clock budget"
+            else:
+                record.status = "error" if accumulated.get("error") else "success"
+                if accumulated.get("error"):
+                    record.error_message = str(accumulated["error"])[:500]
 
         except Exception as e:
             logger.error(f"AGENT.stream: graph error | request_id={request_id} | error={e}", exc_info=True)
@@ -1379,35 +1875,38 @@ class CoMarketerAgent(ResponsesAgent):
                 "llm_call_count": str(record.llm_call_count or 0),
                 "latency_ms": str(record.latency_ms or 0),
             }
-            if accumulated.get("intent") == "data_query":
-                if accumulated.get("genie_trace_id"):
-                    result_tags["genie_trace_id"] = str(accumulated["genie_trace_id"])
-                rewritten_q = accumulated.get("rewritten_question", "")
-                if rewritten_q:
-                    result_tags["genie_rewritten_question"] = str(rewritten_q)[:250]
-                if accumulated.get("genie_summary"):
-                    result_tags["genie_summary"] = str(accumulated["genie_summary"])[:250]
-                if accumulated.get("genie_sql"):
-                    result_tags["genie_sql"] = str(accumulated["genie_sql"])[:250]
-                genie_query_desc = accumulated.get("genie_query_description", "")
-                if genie_query_desc:
-                    result_tags["genie_query_description"] = str(genie_query_desc)[:250]
-                follow_ups = accumulated.get("follow_up_suggestions", [])
-                if follow_ups:
-                    result_tags["genie_follow_ups"] = json.dumps(follow_ups)[:250]
-                if accumulated.get("genie_table"):
-                    result_tags["genie_has_table"] = "true"
-                if accumulated.get("genie_insights"):
-                    result_tags["genie_has_insights"] = "true"
-                if accumulated.get("error"):
-                    result_tags["genie_error"] = str(accumulated["error"])[:250]
+            # Genie tags — per-key guards already skip empty values; no outer
+            # intent gate so tags flow regardless of the IntentClassifier label.
+            if accumulated.get("genie_trace_id"):
+                result_tags["genie_trace_id"] = str(accumulated["genie_trace_id"])
+            rewritten_q = accumulated.get("rewritten_question", "")
+            if rewritten_q:
+                result_tags["genie_rewritten_question"] = str(rewritten_q)[:250]
+            if accumulated.get("genie_summary"):
+                result_tags["genie_summary"] = str(accumulated["genie_summary"])[:250]
+            if accumulated.get("genie_sql"):
+                result_tags["genie_sql"] = str(accumulated["genie_sql"])[:250]
+            genie_query_desc = accumulated.get("genie_query_description", "")
+            if genie_query_desc:
+                result_tags["genie_query_description"] = str(genie_query_desc)[:250]
+            follow_ups = accumulated.get("follow_up_suggestions", [])
+            if follow_ups:
+                result_tags["genie_follow_ups"] = json.dumps(follow_ups)[:250]
+            if accumulated.get("genie_table"):
+                result_tags["genie_has_table"] = "true"
+            if accumulated.get("genie_insights"):
+                result_tags["genie_has_insights"] = "true"
+            if accumulated.get("error"):
+                result_tags["genie_error"] = str(accumulated["error"])[:250]
             mlflow.update_current_trace(tags=result_tags)
             logger.info(f"AGENT.stream: result tags OK | request_id={request_id}")
         except Exception as e:
             logger.warning(f"AGENT.stream: result tags failed: {e}")
 
         # ═══ POST-YIELD: LTM Write Pipeline (zero user-facing latency) ═══
-        if client_scope and not is_greeting and user_query:
+        # Skip if watchdog already fired — we're out of budget; the proxy is ~20s
+        # from killing the stream and LTM writes could eat that margin.
+        if client_scope and not is_greeting and user_query and not watchdog_fired:
             try:
                 with mlflow.start_span(name="ltm_post_yield_write") as span:
                     # 1. Extract entities from user query
@@ -1497,12 +1996,17 @@ async def handle_stream(request):
 
     predict_stream is now an async generator; both STM (AsyncCheckpointSaver) and
     LTM (AsyncDatabricksStore) run natively in this loop. Heartbeat runs as a
-    concurrent task to keep the reverse proxy (~60s idle timeout) warm between
-    slow chunks.
+    concurrent task to keep the reverse proxy idle timeout warm between slow
+    chunks. ASGI middleware (start_server.SSENoBufferMiddleware) adds a
+    wire-level keepalive comment on top of this in case app frames buffer.
     """
     q: asyncio.Queue = asyncio.Queue()
     DONE = object()
     HEARTBEAT = object()
+    t0 = time.monotonic()
+    frames_yielded = 0
+    heartbeats_yielded = 0
+    first_real_yield_logged = False
 
     async def run_stream():
         """Consume the agent async generator and funnel chunks through the queue."""
@@ -1517,9 +2021,12 @@ async def handle_stream(request):
     stream_task = asyncio.create_task(run_stream())
 
     async def heartbeat():
+        hb_count = 0
         try:
             while True:
-                await asyncio.sleep(15)
+                await asyncio.sleep(5)
+                hb_count += 1
+                logger.info("stream.heartbeat tick=%d elapsed=%.2fs", hb_count, time.monotonic() - t0)
                 q.put_nowait(HEARTBEAT)
         except asyncio.CancelledError:
             pass
@@ -1531,12 +2038,29 @@ async def handle_stream(request):
         while True:
             chunk = await q.get()
             if chunk is DONE:
+                logger.info(
+                    "stream.complete elapsed=%.2fs frames=%d heartbeats=%d",
+                    time.monotonic() - t0, frames_yielded, heartbeats_yielded,
+                )
                 break
             if chunk is HEARTBEAT:
+                heartbeats_yielded += 1
                 yield _build_heartbeat_event()
                 continue
             if isinstance(chunk, Exception):
+                logger.warning(
+                    "stream.error elapsed=%.2fs frames=%d heartbeats=%d err=%s",
+                    time.monotonic() - t0, frames_yielded, heartbeats_yielded, chunk,
+                )
                 raise chunk
+            frames_yielded += 1
+            if not first_real_yield_logged:
+                logger.info("stream.first_yield elapsed=%.2fs", time.monotonic() - t0)
+                first_real_yield_logged = True
+            else:
+                kind = getattr(chunk, "custom_outputs", None)
+                kind = (kind or {}).get("type") if isinstance(kind, dict) else None
+                logger.info("stream.yield n=%d elapsed=%.2fs kind=%s", frames_yielded, time.monotonic() - t0, kind)
             yield chunk
     finally:
         hb_task.cancel()

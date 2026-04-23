@@ -12,7 +12,6 @@ from agents.campaign_insight.contracts import TableSummary
 
 logger = logging.getLogger(__name__)
 
-_FULL_MODE_ROW_THRESHOLD = 20
 _TOP_N = 5
 _DIST_TOP = 10
 _ANOMALY_CAP = 20
@@ -28,9 +27,11 @@ class TableAnalyzer:
     ) -> TableSummary:
         """Produce a ``TableSummary`` appropriate for LLM context.
 
-        Small tables (<= 20 rows) are returned as ``mode="full"`` with the
-        raw data intact. Larger tables are analyzed into statistical,
-        categorical, anomaly, and aggregate summaries.
+        Every table goes through the full analysis path (statistical,
+        categorical, anomaly, top/bottom, aggregate summaries) and also
+        carries the first 50 rows of ``full_data`` so defensive downstream
+        code can access raw rows if needed. On analysis failure, degrades
+        to ``mode="full"`` with capped raw rows.
 
         Args:
             columns: Schema entries (dicts with ``name`` key).
@@ -40,13 +41,8 @@ class TableAnalyzer:
         Returns:
             A populated ``TableSummary``.
         """
-        if row_count <= _FULL_MODE_ROW_THRESHOLD:
-            return TableSummary(
-                mode="full", row_count=row_count,
-                full_data=data_array, schema=columns,
-            )
         try:
-            return self._analyze_large(columns, data_array, row_count)
+            summary = self._analyze_large(columns, data_array, row_count)
         except Exception:  # noqa: BLE001 — defensive: log + degrade
             logger.warning(
                 "table_analyzer.analyze_failed rows=%d falling_back", row_count,
@@ -56,6 +52,8 @@ class TableAnalyzer:
                 mode="full", row_count=row_count,
                 full_data=data_array[:50], schema=columns,
             )
+        summary.full_data = data_array[:50]
+        return summary
 
     def _analyze_large(
         self, columns: list[dict], data_array: list[list], row_count: int

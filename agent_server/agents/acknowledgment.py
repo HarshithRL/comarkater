@@ -15,7 +15,7 @@ from prompts.acknowledgment_prompt import ACKNOWLEDGMENT_PROMPT_TEMPLATE
 logger = logging.getLogger(__name__)
 
 # Fallback when LLM fails
-_FALLBACK_ACK = "I've received your query. Let me retrieve the data and provide you with the results."
+_FALLBACK_ACK = "Looking into that for you — preparing the analysis now."
 
 
 def create_acknowledgment(user_query: str, custom_inputs, llm) -> dict | None:

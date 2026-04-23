@@ -1,0 +1,10 @@
+{"case_id": "dev_001", "original_question": "What were my top 5 campaigns by CTR in the last 30 days?", "client_id": "72994", "client_name": "IGP", "expected_intent": "performance_lookup", "notes": "classic ranking query, email/apn mix"}
+{"case_id": "dev_002", "original_question": "Why did open rate drop last week?", "client_id": "72994", "client_name": "IGP", "expected_intent": "diagnostic", "notes": "causal framing, multi-channel possible"}
+{"case_id": "dev_003", "original_question": "Compare email vs SMS engagement for March", "client_id": "81001", "client_name": "Pepe Jeans", "expected_intent": "comparison", "notes": "channel-comparison; open_rate not applicable for SMS"}
+{"case_id": "dev_004", "original_question": "Show trends in delivery rate over the past quarter", "client_id": "72994", "client_name": "IGP", "expected_intent": "trend_analysis", "notes": "trend_rules should fire"}
+{"case_id": "dev_005", "original_question": "Which audience segments responded best to our welcome campaign?", "client_id": "72994", "client_name": "IGP", "expected_intent": "audience_analysis", "notes": "audience dimension explicit"}
+{"case_id": "dev_006", "original_question": "What subject lines worked best last month?", "client_id": "81001", "client_name": "Pepe Jeans", "expected_intent": "content_analysis", "notes": "content dimension; email-only"}
+{"case_id": "dev_007", "original_question": "What's the weather today?", "client_id": "72994", "client_name": "IGP", "expected_intent": "out_of_scope", "notes": "classic OOS"}
+{"case_id": "dev_008", "original_question": "hey there", "client_id": "72994", "client_name": "IGP", "expected_intent": "greeting", "notes": "regex fast-path"}
+{"case_id": "dev_009", "original_question": "what did we just discuss?", "client_id": "72994", "client_name": "IGP", "expected_intent": "clarification", "notes": "meta continuation"}
+{"case_id": "dev_010", "original_question": "suggest ways to improve our BPN campaigns", "client_id": "81001", "client_name": "Pepe Jeans", "expected_intent": "recommendation", "notes": "advice framing; BPN = browser push"}

@@ -149,6 +149,25 @@ class Reflector:
                     recommendations=corrected_recs,
                 )
 
+        _issues = list(verification.issues_found or [])
+        _issue_types: list[str] = []
+        for _iss in _issues:
+            _token = (str(_iss).split(":", 1)[0] or str(_iss))[:40].strip()
+            if _token and _token not in _issue_types:
+                _issue_types.append(_token)
+        _reason = ""
+        if not verification.passed and _issues:
+            _reason = str(_issues[0])[:120]
+        elif not verification.passed:
+            _reason = "failed with no issue text"
+        logger.info(
+            "[DEBUG][REFLECT] passed=%s issues=%s issue_types=%s reason=%r",
+            verification.passed,
+            len(_issues),
+            _issue_types,
+            _reason,
+        )
+
         try:
             from langgraph.config import get_stream_writer
             get_stream_writer()({

@@ -151,6 +151,8 @@ class StepResult:
     genie_trace_id: str = ""
     iterations_used: int = 0
     error_message: str = ""
+    contract_satisfied: bool = False
+    validation_violations: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -182,6 +184,9 @@ class Recommendation:
     expected_impact: str = ""
     evidence: str = ""
     source_pattern: str = ""
+    # Section J bucket: "apply" | "avoid" | "explore". Empty = unbucketed
+    # (treated as "apply" by the renderer).
+    category: str = ""
 
 
 @dataclass

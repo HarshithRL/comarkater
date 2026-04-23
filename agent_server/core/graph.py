@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 
 # ── Module-level cache ──
 _compiled_graph: Optional[CompiledStateGraph] = None
+_compiled_checkpointer: object = None
 _graph_lock = threading.Lock()
 
 _campaign_agent: Optional[CampaignInsightAgent] = None
@@ -247,13 +248,24 @@ def get_compiled_graph(checkpointer=None) -> CompiledStateGraph:
     Returns:
         Compiled StateGraph, reused across all requests.
     """
-    global _compiled_graph
+    global _compiled_graph, _compiled_checkpointer
 
     if _compiled_graph is not None:
+        if checkpointer is not None and checkpointer is not _compiled_checkpointer:
+            raise RuntimeError(
+                "GRAPH: get_compiled_graph called with a checkpointer that differs from "
+                "the one baked into the cached graph. Compile-time coupling must not be "
+                "broken — recompilation with a different saver is not supported."
+            )
         return _compiled_graph
 
     with _graph_lock:
         if _compiled_graph is not None:
+            if checkpointer is not None and checkpointer is not _compiled_checkpointer:
+                raise RuntimeError(
+                    "GRAPH: get_compiled_graph called with a checkpointer that differs from "
+                    "the one baked into the cached graph."
+                )
             return _compiled_graph
 
         graph = StateGraph(AgentState)
@@ -279,6 +291,7 @@ def get_compiled_graph(checkpointer=None) -> CompiledStateGraph:
             compile_kwargs["checkpointer"] = checkpointer
 
         _compiled_graph = graph.compile(**compile_kwargs)
+        _compiled_checkpointer = checkpointer
         logger.info(
             "GRAPH: Compiled ONCE | START → supervisor_classify → "
             "[greeting | clarification | out_of_scope | "

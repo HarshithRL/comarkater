@@ -11,15 +11,23 @@ logger = logging.getLogger(__name__)
 ui_bp = Blueprint("ui", __name__)
 
 
+CLIENTS = [
+    {"id": "sp-igp-001", "name": "IGP"},
+    {"id": "sp-pepe-002", "name": "Pepe Jeans"},
+    {"id": "sp-crocs-003", "name": "Crocs"},
+]
+
+
 @ui_bp.route("/")
 def index():
     """Render the chat UI."""
-    clients = [
-        {"id": "sp-igp-001", "name": "IGP"},
-        {"id": "sp-pepe-002", "name": "Pepe Jeans"},
-        {"id": "sp-crocs-003", "name": "Crocs"},
-    ]
-    return render_template("index.html", clients=clients)
+    return render_template("index.html", clients=CLIENTS)
+
+
+@ui_bp.route("/debug-stream")
+def debug_stream():
+    """Render the raw SSE stream debug page."""
+    return render_template("debug_stream.html", clients=CLIENTS)
 
 
 def _build_agent_request(query: str, sp_id: str, conversation_id: str = ""):

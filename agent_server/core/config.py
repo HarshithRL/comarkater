@@ -26,6 +26,7 @@ class Settings:
 
     # Model endpoints
     LLM_ENDPOINT_NAME: str = os.environ.get("LLM_ENDPOINT_NAME", "databricks-gpt-5-2")
+    CHART_LLM_ENDPOINT_NAME: str = os.environ.get("CHART_LLM_ENDPOINT_NAME", "databricks-gpt-5-4-nano")
 
     # Genie API
     GENIE_SPACE_ID: str = os.environ.get("GENIE_SPACE_ID", "01f1369ea0a11cd9a386669de0083fd8")

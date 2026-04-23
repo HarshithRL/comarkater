@@ -15,7 +15,6 @@ client_scope namespace, not by separate connections.
 All methods are safe to call from any context — failures are logged,
 never raised. The agent continues without LTM if Lakebase is unavailable.
 """
-import asyncio
 import uuid
 import logging
 from datetime import datetime
@@ -54,85 +53,25 @@ class LTMManager:
         self.embedding_endpoint = embedding_endpoint
         self.embedding_dims = embedding_dims
         self._store: Optional[AsyncDatabricksStore] = None
-        self._store_lock = asyncio.Lock()
-        self._store_failed = False
         logger.info(f"LTM: Manager created (instance={instance_name})")
 
-    async def _get_store(self) -> Optional[AsyncDatabricksStore]:
-        """Lazy-initialize AsyncDatabricksStore on first access. Async-safe.
+    def attach_store(self, store: AsyncDatabricksStore) -> None:
+        """Attach a pre-opened AsyncDatabricksStore.
 
-        Uses double-checked locking to ensure setup() runs exactly once.
-        Returns None if Lakebase is unavailable (callers handle gracefully).
+        Called from the startup hook after the store's async context has been
+        entered (pool open) and setup() has been awaited (tables created). From
+        this point on, LTM read/write calls are served without per-request init.
         """
-        if self._store is not None:
-            return self._store
-        if self._store_failed:
-            return None
+        self._store = store
+        logger.info("LTM: store attached — ready to serve reads and writes")
 
-        async with self._store_lock:
-            if self._store is not None:
-                return self._store
-            if self._store_failed:
-                return None
+    async def _get_store(self) -> Optional[AsyncDatabricksStore]:
+        """Return the attached store, or None if LTM init failed/was skipped.
 
-            from core.config import settings
-            mode = settings.LAKEBASE_MODE
-            project = settings.LAKEBASE_PROJECT
-            branch = settings.LAKEBASE_BRANCH
-            logger.info(
-                f"LTM: Initializing AsyncDatabricksStore\n"
-                f"  mode={mode}, project={project}, branch={branch}\n"
-                f"  auth=app_identity (auto)\n"
-                f"  embedding_endpoint={self.embedding_endpoint}, dims={self.embedding_dims}"
-            )
-            try:
-                if mode == "autoscaling":
-                    store = AsyncDatabricksStore(
-                        project=project,
-                        branch=branch,
-                        embedding_endpoint=self.embedding_endpoint,
-                        embedding_dims=self.embedding_dims,
-                        embedding_fields=["$.query", "$.finding"],
-                    )
-                    logger.info(f"LTM: AsyncDatabricksStore created (autoscaling, project={project}, branch={branch})")
-                else:
-                    store = AsyncDatabricksStore(
-                        instance_name=self.instance_name,
-                        embedding_endpoint=self.embedding_endpoint,
-                        embedding_dims=self.embedding_dims,
-                        embedding_fields=["$.query", "$.finding"],
-                    )
-                    logger.info(f"LTM: AsyncDatabricksStore created (provisioned, instance={self.instance_name})")
-
-                if hasattr(store, '_lakebase'):
-                    lb = store._lakebase
-                    logger.info(
-                        f"LTM: LakebasePool info | host={getattr(lb, 'host', 'N/A')} | "
-                        f"endpoint_name={getattr(lb, '_endpoint_name', 'N/A')} | "
-                        f"project={getattr(lb, 'project', 'N/A')} | "
-                        f"branch={getattr(lb, 'branch', 'N/A')}"
-                    )
-
-                logger.info("LTM: Calling store.setup() to create/verify tables...")
-                setup_result = store.setup()
-                if asyncio.iscoroutine(setup_result):
-                    await setup_result
-                self._store = store
-                logger.info("LTM: AsyncDatabricksStore ready — tables verified")
-            except Exception as e:
-                self._store_failed = True
-                logger.error(
-                    f"LTM: AsyncDatabricksStore init/setup FAILED (will not retry)\n"
-                    f"  mode={mode}, project={project}, branch={branch}\n"
-                    f"  error_type={type(e).__name__}\n"
-                    f"  error={e}",
-                    exc_info=True,
-                )
+        LTM is optional — callers treat None as 'unavailable' and degrade
+        gracefully without raising.
+        """
         return self._store
-
-    async def ainit(self) -> None:
-        """Eagerly initialize the store. Idempotent; safe to call multiple times."""
-        await self._get_store()
 
     # ── Namespace helpers ──
 

@@ -14,22 +14,27 @@ from agents.campaign_insight.contracts import GenieResponse
 logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = {"COMPLETED", "FAILED", "FEEDBACK_NEEDED", "CANCELLED"}
-_POLL_TIMEOUT_S = 120.0
+_POLL_TIMEOUT_S = 60.0
 _HTTP_TIMEOUT_S = 60.0
 
-# Detect SQL leaking into the NL query. Matches the common SQL keywords at
-# clause boundaries; one hit is enough to reject the query.
+# Detect SQL leaking into the NL query. We only reject things that are
+# clearly SQL — not natural English that happens to use words Genie can
+# parse (e.g. "group by channel", "order by revenue", "top 10", "limit to
+# 30 days", "join the audience data"). Genie is a schema-aware NL-to-SQL
+# engine and is perfectly happy with English aggregation verbs.
+#
+# Hard rejects are reserved for patterns that are unambiguously a SQL
+# statement: SELECT paired with FROM, a CTE, UNION SELECT, or true SQL
+# syntax characters (semicolons, backticks).
 _SQL_GUARD = re.compile(
-    r"(?is)(?:^|\b)(?:select\s+[\w*`\"'(]"
-    r"|with\s+\w+\s+as\s*\("
-    r"\bfrom\s+[\w`\"']"
-    r"|\bwhere\s+\w+\s*[=<>]"
-    r"|\bgroup\s+by\b"
-    r"|\border\s+by\b"
-    r"|\bjoin\s+\w+"
-    r"|\bunion\s+(?:all\s+)?select\b"
-    r"|\blimit\s+\d+"
-    r")"
+    r"(?is)"
+    # SELECT <cols> FROM <ident>  — a real statement (allow up to 400 chars
+    # of projection between SELECT and FROM to catch multi-column lists).
+    r"(?:\bselect\b[\s\S]{1,400}?\bfrom\s+[\w`\"'])"
+    # CTE: WITH <name> AS (
+    r"|(?:(?:^|\n)\s*with\s+\w+\s+as\s*\()"
+    # UNION SELECT / UNION ALL SELECT
+    r"|(?:\bunion\s+(?:all\s+)?select\b)"
 )
 
 
@@ -163,8 +168,8 @@ class ToolHandler:
                     "event_type": "genie_status",
                     "phase": "start",
                     "message": (
-                        "Fetching data..." if attempt == 0
-                        else f"Retrying data fetch (attempt {attempt + 1})..."
+                        "Retrieving the data..." if attempt == 0
+                        else f"Retrying data retrieval (attempt {attempt + 1})..."
                     ),
                 })
             except Exception:

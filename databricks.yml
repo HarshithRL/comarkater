@@ -114,6 +114,8 @@ resources:
             value: "agentmemory"
           - name: LAKEBASE_BRANCH
             value: "production"
+          - name: LAKEBASE_ALLOW_INMEMORY_FALLBACK
+            value: "false"
           - name: EMBEDDING_ENDPOINT
             value: "databricks-gte-large-en"
           - name: EMBEDDING_DIMS

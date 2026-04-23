@@ -1,0 +1,997 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CoMarketer — Raw Stream Debug</title>
+    <style>
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            background: #0f1115;
+            color: #e4e6ea;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-size: 14px;
+        }
+        .wrap {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+        header {
+            padding: 12px 16px;
+            background: #16181f;
+            border-bottom: 1px solid #262932;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        header h1 {
+            margin: 0;
+            font-size: 15px;
+            font-weight: 600;
+            color: #e4e6ea;
+        }
+        header .badge {
+            background: #f59e0b22;
+            color: #f59e0b;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+        header a.back {
+            margin-left: auto;
+            color: #8b92a5;
+            text-decoration: none;
+            font-size: 12px;
+        }
+        header a.back:hover { color: #e4e6ea; }
+        .controls {
+            padding: 12px 16px;
+            background: #13161c;
+            border-bottom: 1px solid #262932;
+            display: grid;
+            grid-template-columns: 180px 1fr auto auto;
+            gap: 8px;
+            align-items: start;
+        }
+        .controls label {
+            display: block;
+            font-size: 11px;
+            color: #8b92a5;
+            margin-bottom: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        select, input, textarea, button {
+            font-family: inherit;
+            font-size: 13px;
+        }
+        select, input[type="text"], textarea {
+            width: 100%;
+            background: #1c1f27;
+            border: 1px solid #2a2d37;
+            color: #e4e6ea;
+            padding: 8px 10px;
+            border-radius: 6px;
+            outline: none;
+        }
+        select:focus, input:focus, textarea:focus {
+            border-color: #6366f1;
+        }
+        textarea {
+            resize: vertical;
+            min-height: 38px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        button {
+            background: #6366f1;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            height: 38px;
+            align-self: end;
+        }
+        button:hover { background: #5558e3; }
+        button:disabled { background: #3a3d48; cursor: not-allowed; }
+        button.secondary {
+            background: #262932;
+            color: #e4e6ea;
+        }
+        button.secondary:hover { background: #31343f; }
+        .stats-bar {
+            padding: 8px 16px;
+            background: #0d0f14;
+            border-bottom: 1px solid #262932;
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+            color: #8b92a5;
+            align-items: center;
+        }
+        .stats-bar .stat strong {
+            color: #e4e6ea;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        .stats-bar label {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            color: #8b92a5;
+        }
+        .output {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px 16px;
+            background: #0f1115;
+        }
+        .event {
+            background: #16181f;
+            border: 1px solid #262932;
+            border-left: 3px solid #6366f1;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            overflow: hidden;
+        }
+        .event.kind-RATIONALE { border-left-color: #a78bfa; }
+        .event.kind-observation { border-left-color: #10b981; }
+        .event.kind-TRACE_DONE { border-left-color: #f59e0b; }
+        .event.kind-HEARTBEAT { border-left-color: #4b5563; opacity: 0.6; }
+        .event.kind-error { border-left-color: #ef4444; }
+        .event-head {
+            padding: 8px 12px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+            user-select: none;
+            background: #1a1d25;
+        }
+        .event-head:hover { background: #1f222c; }
+        .event-head .idx {
+            color: #8b92a5;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 11px;
+            min-width: 32px;
+        }
+        .event-head .kind {
+            font-weight: 600;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            background: #262932;
+        }
+        .event-head .elapsed {
+            color: #8b92a5;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 11px;
+            margin-left: auto;
+        }
+        .event-head .size {
+            color: #8b92a5;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 11px;
+        }
+        .event-head .arrow {
+            color: #8b92a5;
+            font-size: 10px;
+            transition: transform 0.15s;
+        }
+        .event.open .event-head .arrow { transform: rotate(90deg); }
+        .event-body {
+            display: none;
+            padding: 10px 12px;
+            background: #0d0f14;
+            border-top: 1px solid #262932;
+        }
+        .event.open .event-body { display: block; }
+        pre.json {
+            margin: 0;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+            color: #d1d5db;
+        }
+        .json-key { color: #93c5fd; }
+        .json-string { color: #86efac; }
+        .json-number { color: #fbbf24; }
+        .json-bool { color: #f472b6; }
+        .json-null { color: #9ca3af; }
+        .empty {
+            color: #8b92a5;
+            text-align: center;
+            padding: 40px;
+            font-style: italic;
+        }
+        .raw-line {
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 11px;
+            color: #6b7280;
+            background: #0d0f14;
+            padding: 6px 10px;
+            border-radius: 4px;
+            margin-top: 6px;
+            word-break: break-all;
+        }
+        .error-banner {
+            background: #ef444422;
+            border: 1px solid #ef4444;
+            color: #fca5a5;
+            padding: 10px 14px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+        }
+        .response-card {
+            background: #1a1d25;
+            border: 1px solid #2a2d37;
+            border-left: 3px solid #0ea5e9;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            padding: 10px 12px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+        }
+        .response-card .status { color: #e4e6ea; font-weight: 600; margin-bottom: 6px; }
+        .response-card .hdr { color: #9ca3af; }
+        .response-card .hdr-key { color: #93c5fd; }
+        .line-data { color: #86efac; }
+        .line-event { color: #fbbf24; }
+        .line-id { color: #c4b5fd; }
+        .line-comment { color: #6b7280; font-style: italic; }
+        .line-empty { color: #4b5563; }
+        .line-unknown { color: #f472b6; }
+        .line-prefix { color: #6b7280; margin-right: 6px; }
+        .frame-lines {
+            background: #0d0f14;
+            padding: 8px 10px;
+            border-radius: 4px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            line-height: 1.55;
+            margin-bottom: 8px;
+        }
+        .frame-section-label {
+            font-size: 10px;
+            color: #8b92a5;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin: 8px 0 4px;
+        }
+        .chunks-panel {
+            background: #16181f;
+            border: 1px solid #262932;
+            border-radius: 6px;
+            margin-top: 16px;
+        }
+        .chunks-panel > summary {
+            padding: 10px 12px;
+            cursor: pointer;
+            font-size: 12px;
+            color: #9ca3af;
+            user-select: none;
+        }
+        .chunks-panel > summary:hover { color: #e4e6ea; }
+        .chunks-log {
+            padding: 8px 12px 12px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 11px;
+            color: #9ca3af;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .chunk-entry {
+            padding: 4px 0;
+            border-top: 1px dashed #262932;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .chunk-entry:first-child { border-top: none; }
+        .chunk-entry .chunk-meta { color: #6b7280; }
+        .gap-badge {
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 10px;
+            padding: 1px 5px;
+            border-radius: 3px;
+            margin-right: 6px;
+            background: #262932;
+            color: #9ca3af;
+        }
+        .gap-badge.gap-hot { background: #7f1d1d; color: #fecaca; }
+        .gap-badge.gap-warm { background: #78350f; color: #fde68a; }
+        .stats-bar .stat.max-gap strong.hot { color: #fca5a5; }
+        .event.kind-keepalive { border-left-color: #374151; opacity: 0.55; }
+        .event.kind-keepalive .event-head { background: #141720; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <header>
+            <h1>CoMarketer — Raw Stream Debug</h1>
+            <span class="badge">DEBUG</span>
+            <a class="back" href="/ui/">&larr; Back to chat</a>
+        </header>
+
+        <div class="controls">
+            <div>
+                <label for="client">Client</label>
+                <select id="client">
+                    {% for c in clients %}
+                    <option value="{{ c.id }}">{{ c.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="query">Query</label>
+                <textarea id="query" rows="1" placeholder="e.g. Show me top 5 email campaigns by open rate last month"></textarea>
+            </div>
+            <button id="sendBtn" onclick="sendQuery()">Send</button>
+            <button class="secondary" onclick="clearOutput()">Clear</button>
+        </div>
+
+        <div style="padding: 8px 16px; background: #13161c; border-bottom: 1px solid #262932; display: flex; gap: 16px; align-items: center; font-size: 12px; color: #8b92a5;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                <input type="checkbox" id="modeBackground" checked>
+                background mode (long-running, survives 120s)
+            </label>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                <input type="checkbox" id="autoReconnect" checked>
+                auto-reconnect on error
+            </label>
+            <button id="reconnectBtn" class="secondary" style="padding:4px 10px;height:26px;font-size:12px;" onclick="manualReconnect()" disabled>Reconnect now</button>
+        </div>
+
+        <div class="stats-bar">
+            <div class="stat">Status: <strong id="statStatus">idle</strong></div>
+            <div class="stat">Frames: <strong id="statEvents">0</strong></div>
+            <div class="stat">Chunks: <strong id="statChunks">0</strong></div>
+            <div class="stat">Bytes: <strong id="statBytes">0</strong></div>
+            <div class="stat">TTFB: <strong id="statTtfb">—</strong></div>
+            <div class="stat">Elapsed: <strong id="statElapsed">0.0s</strong></div>
+            <div class="stat">Since last byte: <strong id="statSinceLast">—</strong></div>
+            <div class="stat max-gap">Max gap: <strong id="statMaxGap">—</strong></div>
+            <div class="stat">Response ID: <strong id="statResponseId">—</strong></div>
+            <div class="stat">Last seq: <strong id="statLastSeq">—</strong></div>
+            <div class="stat">Conv ID: <strong id="statConvId">—</strong></div>
+            <label>
+                <input type="checkbox" id="autoExpand" checked>
+                auto-expand
+            </label>
+            <label>
+                <input type="checkbox" id="autoScroll" checked>
+                auto-scroll
+            </label>
+            <button class="secondary" style="padding:4px 10px;height:28px;font-size:12px;" onclick="copyAll()">Copy raw</button>
+        </div>
+
+        <div class="output" id="output">
+            <div class="empty">Fire a query to see the full raw response from <code>/invocations</code> — headers, every SSE frame, every byte chunk.</div>
+        </div>
+    </div>
+
+    <script>
+        const output = document.getElementById('output');
+        const sendBtn = document.getElementById('sendBtn');
+        const queryEl = document.getElementById('query');
+        const statStatus = document.getElementById('statStatus');
+        const statEvents = document.getElementById('statEvents');
+        const statChunks = document.getElementById('statChunks');
+        const statBytes = document.getElementById('statBytes');
+        const statTtfb = document.getElementById('statTtfb');
+        const statElapsed = document.getElementById('statElapsed');
+        const statSinceLast = document.getElementById('statSinceLast');
+        const statMaxGap = document.getElementById('statMaxGap');
+        const statResponseId = document.getElementById('statResponseId');
+        const statLastSeq = document.getElementById('statLastSeq');
+        const statConvId = document.getElementById('statConvId');
+        const autoExpand = document.getElementById('autoExpand');
+        const autoScroll = document.getElementById('autoScroll');
+        const modeBackground = document.getElementById('modeBackground');
+        const autoReconnect = document.getElementById('autoReconnect');
+        const reconnectBtn = document.getElementById('reconnectBtn');
+
+        let capturedRaw = '';
+        let abortCtrl = null;
+        let chunksLogEl = null;
+        let lastChunkAt = 0;
+        let maxGapMs = 0;
+        let prevFrameAt = 0;
+        let lastFrameKind = '—';
+        let currentResponseId = '';
+        let currentLastSeq = -1;
+        let currentQueryState = null;  // for reconnect: { spId, convId, t0, ... }
+        let reconnectCount = 0;
+
+        function fmtGap(ms) {
+            const s = ms / 1000;
+            return s.toFixed(s >= 10 ? 0 : 1) + 's';
+        }
+        function gapBadgeClass(ms) {
+            if (ms >= 30000) return 'gap-hot';
+            if (ms >= 10000) return 'gap-warm';
+            return '';
+        }
+
+        function escapeHtml(t) {
+            const d = document.createElement('div');
+            d.textContent = t == null ? '' : String(t);
+            return d.innerHTML;
+        }
+
+        function highlightJson(obj) {
+            const raw = JSON.stringify(obj, null, 2);
+            return escapeHtml(raw)
+                .replace(/&quot;([^&]+?)&quot;(\s*:)/g, '<span class="json-key">&quot;$1&quot;</span>$2')
+                .replace(/:\s*&quot;((?:[^&]|&(?!quot;))*?)&quot;/g, ': <span class="json-string">&quot;$1&quot;</span>')
+                .replace(/:\s*(-?\d+\.?\d*)/g, ': <span class="json-number">$1</span>')
+                .replace(/:\s*(true|false)/g, ': <span class="json-bool">$1</span>')
+                .replace(/:\s*(null)/g, ': <span class="json-null">$1</span>');
+        }
+
+        function eventKind(ev) {
+            const co = ev.custom_outputs || {};
+            if (ev.error) return 'error';
+            if (co.type) return co.type;
+            if (ev.type) return ev.type;
+            return 'event';
+        }
+
+        function renderResponseCard(resp, ttfbMs) {
+            const hdrs = [];
+            resp.headers.forEach((v, k) => hdrs.push([k, v]));
+            const hdrHtml = hdrs
+                .map(([k, v]) => `<div><span class="hdr-key">${escapeHtml(k)}</span>: <span class="hdr">${escapeHtml(v)}</span></div>`)
+                .join('');
+            const card = document.createElement('div');
+            card.className = 'response-card';
+            card.innerHTML = `
+                <div class="status">HTTP ${resp.status} ${escapeHtml(resp.statusText || '')} &nbsp;·&nbsp; TTFB ${ttfbMs.toFixed(0)} ms</div>
+                <div class="frame-section-label">Response headers</div>
+                ${hdrHtml}
+            `;
+            output.appendChild(card);
+        }
+
+        function parseFrameLines(rawFrame) {
+            // Returns { lines: [{type, raw, value}], dataCombined, eventType, id }
+            const lines = rawFrame.split('\n');
+            const parsed = [];
+            const dataParts = [];
+            let eventType = null;
+            let id = null;
+            for (const ln of lines) {
+                if (ln === '') {
+                    parsed.push({ type: 'empty', raw: ln, value: '' });
+                } else if (ln.startsWith(':')) {
+                    parsed.push({ type: 'comment', raw: ln, value: ln.slice(1) });
+                } else if (ln.startsWith('data:')) {
+                    const v = ln.startsWith('data: ') ? ln.slice(6) : ln.slice(5);
+                    dataParts.push(v);
+                    parsed.push({ type: 'data', raw: ln, value: v });
+                } else if (ln.startsWith('event:')) {
+                    const v = ln.startsWith('event: ') ? ln.slice(7) : ln.slice(6);
+                    eventType = v;
+                    parsed.push({ type: 'event', raw: ln, value: v });
+                } else if (ln.startsWith('id:')) {
+                    const v = ln.startsWith('id: ') ? ln.slice(4) : ln.slice(3);
+                    id = v;
+                    parsed.push({ type: 'id', raw: ln, value: v });
+                } else if (ln.startsWith('retry:')) {
+                    parsed.push({ type: 'retry', raw: ln, value: ln.slice(6).trim() });
+                } else {
+                    parsed.push({ type: 'unknown', raw: ln, value: ln });
+                }
+            }
+            return { lines: parsed, dataCombined: dataParts.join('\n'), eventType, id };
+        }
+
+        function lineClass(type) {
+            return {
+                data: 'line-data',
+                event: 'line-event',
+                id: 'line-id',
+                retry: 'line-id',
+                comment: 'line-comment',
+                empty: 'line-empty',
+                unknown: 'line-unknown',
+            }[type] || 'line-unknown';
+        }
+
+        function captureReconnectState(parsed) {
+            if (!parsed || typeof parsed !== 'object') return;
+            if (parsed.response_id && !currentResponseId) {
+                currentResponseId = parsed.response_id;
+                statResponseId.textContent = currentResponseId.length > 16
+                    ? currentResponseId.slice(0, 13) + '…' : currentResponseId;
+                statResponseId.title = currentResponseId;
+                reconnectBtn.disabled = false;
+            }
+            if (typeof parsed.sequence_number === 'number' && parsed.sequence_number > currentLastSeq) {
+                currentLastSeq = parsed.sequence_number;
+                statLastSeq.textContent = String(currentLastSeq);
+            }
+        }
+
+        function renderFrame(idx, rawFrame, elapsedSec) {
+            const { lines, dataCombined, eventType } = parseFrameLines(rawFrame);
+
+            // Determine header label
+            let headerKind = '(no data)';
+            let parsed = null;
+            let isDone = false;
+            let isKeepalive = false;
+            if (dataCombined.trim() === '[DONE]') {
+                headerKind = '[DONE]';
+                isDone = true;
+            } else if (dataCombined) {
+                try {
+                    parsed = JSON.parse(dataCombined);
+                    headerKind = eventKind(parsed);
+                    captureReconnectState(parsed);
+                } catch {
+                    headerKind = '(parse error)';
+                }
+            } else if (eventType) {
+                headerKind = 'event:' + eventType;
+            } else if (lines.every(l => l.type === 'comment' || l.type === 'empty')) {
+                headerKind = 'keepalive';
+                isKeepalive = true;
+            }
+            const safeKind = isKeepalive ? 'keepalive' : String(headerKind).replace(/[^a-zA-Z0-9_-]/g, '_');
+            const size = rawFrame.length;
+
+            // Per-frame gap relative to previous frame
+            const nowMs = performance.now();
+            const gapMs = prevFrameAt === 0 ? 0 : (nowMs - prevFrameAt);
+            prevFrameAt = nowMs;
+            const gapBadge = (gapMs > 0)
+                ? `<span class="gap-badge ${gapBadgeClass(gapMs)}">+${fmtGap(gapMs)}</span>`
+                : '';
+            lastFrameKind = headerKind;
+
+            // Render all raw frame lines with coloring
+            const linesHtml = lines.map(l => {
+                if (l.type === 'empty') return `<div class="${lineClass(l.type)}">(empty line)</div>`;
+                return `<div class="${lineClass(l.type)}"><span class="line-prefix">${escapeHtml(l.type)}:</span>${escapeHtml(l.raw)}</div>`;
+            }).join('');
+
+            const parsedHtml = parsed !== null
+                ? `<div class="frame-section-label">Parsed JSON (from data lines)</div><pre class="json">${highlightJson(parsed)}</pre>`
+                : (dataCombined && !isDone
+                    ? `<div class="frame-section-label">Data (not JSON)</div><pre class="json">${escapeHtml(dataCombined)}</pre>`
+                    : '');
+
+            const div = document.createElement('div');
+            div.className = `event kind-${safeKind}${isDone ? ' kind-done' : ''}`;
+            div.innerHTML = `
+                <div class="event-head" onclick="this.parentElement.classList.toggle('open')">
+                    <span class="idx">#${idx}</span>
+                    <span class="kind">${escapeHtml(headerKind)}</span>
+                    ${gapBadge}
+                    <span class="size">${size} B · ${lines.length}L</span>
+                    <span class="elapsed">${elapsedSec.toFixed(2)}s</span>
+                    <span class="arrow">&#9654;</span>
+                </div>
+                <div class="event-body">
+                    <div class="frame-section-label">Raw frame</div>
+                    <div class="frame-lines">${linesHtml}</div>
+                    ${parsedHtml}
+                </div>
+            `;
+            if (autoExpand.checked) div.classList.add('open');
+            output.appendChild(div);
+            if (autoScroll.checked) output.scrollTop = output.scrollHeight;
+        }
+
+        function ensureChunksPanel() {
+            if (chunksLogEl) return chunksLogEl;
+            const det = document.createElement('details');
+            det.className = 'chunks-panel';
+            det.innerHTML = `<summary>Raw byte chunks (as received from reader.read())</summary><div class="chunks-log"></div>`;
+            output.appendChild(det);
+            chunksLogEl = det.querySelector('.chunks-log');
+            return chunksLogEl;
+        }
+
+        function appendChunk(idx, bytes, text, elapsedSec) {
+            const log = ensureChunksPanel();
+            const entry = document.createElement('div');
+            entry.className = 'chunk-entry';
+            entry.innerHTML = `<span class="chunk-meta">#${idx} · ${elapsedSec.toFixed(2)}s · ${bytes} B</span>\n${escapeHtml(text)}`;
+            log.appendChild(entry);
+            if (autoScroll.checked) log.scrollTop = log.scrollHeight;
+        }
+
+        function appendBanner(msg) {
+            const b = document.createElement('div');
+            b.className = 'error-banner';
+            b.textContent = msg;
+            output.appendChild(b);
+            if (autoScroll.checked) output.scrollTop = output.scrollHeight;
+        }
+
+        function clearOutput() {
+            if (abortCtrl) { abortCtrl.abort(); abortCtrl = null; }
+            capturedRaw = '';
+            chunksLogEl = null;
+            lastChunkAt = 0;
+            maxGapMs = 0;
+            prevFrameAt = 0;
+            lastFrameKind = '—';
+            currentResponseId = '';
+            currentLastSeq = -1;
+            currentQueryState = null;
+            reconnectCount = 0;
+            output.innerHTML = '<div class="empty">Fire a query to see the full raw response from <code>/invocations</code> — headers, every SSE frame, every byte chunk.</div>';
+            statStatus.textContent = 'idle';
+            statEvents.textContent = '0';
+            statChunks.textContent = '0';
+            statBytes.textContent = '0';
+            statTtfb.textContent = '—';
+            statElapsed.textContent = '0.0s';
+            statSinceLast.textContent = '—';
+            statMaxGap.textContent = '—';
+            statMaxGap.classList.remove('hot');
+            statResponseId.textContent = '—';
+            statLastSeq.textContent = '—';
+            statConvId.textContent = '—';
+            reconnectBtn.disabled = true;
+            sendBtn.disabled = false;
+            sendBtn.textContent = 'Send';
+        }
+
+        function copyAll() {
+            if (!capturedRaw) return;
+            navigator.clipboard.writeText(capturedRaw).then(
+                () => { sendBtn.textContent = 'Copied!'; setTimeout(() => { if (!abortCtrl) sendBtn.textContent = 'Send'; }, 1000); },
+                () => alert('Clipboard write failed')
+            );
+        }
+
+        async function sendQuery() {
+            const query = queryEl.value.trim();
+            if (!query) return;
+            if (abortCtrl) abortCtrl.abort();
+
+            const spId = document.getElementById('client').value;
+            const convId = `dbg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
+            // Reset UI
+            capturedRaw = '';
+            chunksLogEl = null;
+            lastChunkAt = 0;
+            maxGapMs = 0;
+            prevFrameAt = 0;
+            lastFrameKind = '—';
+            currentResponseId = '';
+            currentLastSeq = -1;
+            reconnectCount = 0;
+            output.innerHTML = '';
+            statStatus.textContent = 'streaming';
+            statEvents.textContent = '0';
+            statChunks.textContent = '0';
+            statBytes.textContent = '0';
+            statTtfb.textContent = '—';
+            statElapsed.textContent = '0.0s';
+            statSinceLast.textContent = '0.0s';
+            statMaxGap.textContent = '0.0s';
+            statMaxGap.classList.remove('hot');
+            statResponseId.textContent = '—';
+            statLastSeq.textContent = '—';
+            statConvId.textContent = convId;
+            reconnectBtn.disabled = true;
+            sendBtn.disabled = true;
+            sendBtn.textContent = 'Streaming...';
+
+            const t0 = performance.now();
+            let totalBytes = 0;
+            let frameIdx = 0;
+            let chunkIdx = 0;
+            currentQueryState = { spId, convId, query, t0 };
+            abortCtrl = new AbortController();
+
+            // Timer tick — updates elapsed and since-last-byte every 100ms
+            const timerId = setInterval(() => {
+                const now = performance.now();
+                statElapsed.textContent = ((now - t0) / 1000).toFixed(1) + 's';
+                if (lastChunkAt > 0) {
+                    const sinceMs = now - lastChunkAt;
+                    statSinceLast.textContent = fmtGap(sinceMs);
+                    if (sinceMs > maxGapMs) {
+                        maxGapMs = sinceMs;
+                        statMaxGap.textContent = fmtGap(maxGapMs);
+                        statMaxGap.classList.toggle('hot', maxGapMs >= 30000);
+                    }
+                }
+            }, 100);
+
+            try {
+                const resp = await fetch('/invocations', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        input: [{ role: 'user', content: query }],
+                        custom_inputs: {
+                            sp_id: spId,
+                            user_name: 'Debug User',
+                            user_id: 'debug-ui',
+                            conversation_id: convId,
+                            task_type: 'analytics',
+                        },
+                        stream: true,
+                        background: modeBackground.checked,
+                    }),
+                    signal: abortCtrl.signal,
+                });
+
+                const ttfbMs = performance.now() - t0;
+                statTtfb.textContent = ttfbMs.toFixed(0) + ' ms';
+                renderResponseCard(resp, ttfbMs);
+
+                if (!resp.ok) {
+                    const errTxt = await resp.text();
+                    capturedRaw += errTxt;
+                    appendBanner(`HTTP ${resp.status}: ${errTxt}`);
+                    statStatus.textContent = `error ${resp.status}`;
+                    return;
+                }
+
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value, { stream: true });
+                    const nowMs = performance.now();
+                    const chunkElapsed = (nowMs - t0) / 1000;
+                    if (lastChunkAt > 0) {
+                        const gap = nowMs - lastChunkAt;
+                        if (gap > maxGapMs) {
+                            maxGapMs = gap;
+                            statMaxGap.textContent = fmtGap(maxGapMs);
+                            statMaxGap.classList.toggle('hot', maxGapMs >= 30000);
+                        }
+                    }
+                    lastChunkAt = nowMs;
+                    totalBytes += value.byteLength;
+                    chunkIdx++;
+                    statBytes.textContent = totalBytes.toLocaleString();
+                    statChunks.textContent = String(chunkIdx);
+                    capturedRaw += chunk;
+                    appendChunk(chunkIdx, value.byteLength, chunk, chunkElapsed);
+
+                    buffer += chunk;
+
+                    // SSE frames are separated by "\n\n" (LF LF) or "\r\n\r\n".
+                    // Normalize CRLF to LF, then split on \n\n.
+                    buffer = buffer.replace(/\r\n/g, '\n');
+                    let sepIdx;
+                    while ((sepIdx = buffer.indexOf('\n\n')) !== -1) {
+                        const rawFrame = buffer.slice(0, sepIdx);
+                        buffer = buffer.slice(sepIdx + 2);
+                        frameIdx++;
+                        const elapsedSec = (performance.now() - t0) / 1000;
+                        renderFrame(frameIdx, rawFrame, elapsedSec);
+                        statEvents.textContent = String(frameIdx);
+                    }
+                }
+
+                // Trailing partial frame (no final blank line) — still show it.
+                if (buffer.length > 0) {
+                    frameIdx++;
+                    const elapsedSec = (performance.now() - t0) / 1000;
+                    renderFrame(frameIdx, buffer, elapsedSec);
+                    statEvents.textContent = String(frameIdx);
+                    buffer = '';
+                }
+
+                statStatus.textContent = 'done';
+            } catch (err) {
+                if (err.name === 'AbortError') {
+                    statStatus.textContent = 'aborted';
+                } else {
+                    console.error('debug-stream fetch error', err);
+                    const parts = [
+                        `name:    ${err.name || '(none)'}`,
+                        `message: ${err.message || '(none)'}`,
+                    ];
+                    if (err.cause) {
+                        parts.push(`cause:   ${err.cause.name || ''} ${err.cause.message || err.cause}`);
+                    }
+                    if (err.stack) {
+                        parts.push('stack:');
+                        parts.push(err.stack.split('\n').slice(0, 4).join('\n'));
+                    }
+                    parts.push('');
+                    parts.push(`request: POST ${location.origin}/invocations`);
+                    parts.push(`elapsed at throw: ${((performance.now() - t0) / 1000).toFixed(2)}s`);
+                    parts.push(`bytes received before throw: ${totalBytes}`);
+                    parts.push(`frames parsed before throw: ${frameIdx}`);
+                    parts.push(`max gap before death: ${fmtGap(maxGapMs)}`);
+                    parts.push(`last frame kind: ${lastFrameKind}`);
+                    parts.push('');
+                    parts.push('Common causes:');
+                    parts.push('  • server crashed mid-stream (check server logs)');
+                    parts.push('  • proxy/Databricks App idle timeout');
+                    parts.push('  • TLS interruption / network blip');
+                    parts.push('  • CORS (only if /ui is on a different origin than /invocations)');
+                    parts.push('  • ad-blocker / browser extension blocking the request');
+                    parts.push('');
+                    parts.push('→ Open DevTools → Network → click the /invocations row → inspect status & response.');
+                    if (currentResponseId) {
+                        parts.push('');
+                        parts.push(`response_id captured: ${currentResponseId}`);
+                        parts.push(`last sequence_number: ${currentLastSeq}`);
+                        parts.push(autoReconnect.checked
+                            ? '→ Auto-reconnecting in 400ms…'
+                            : '→ Click "Reconnect now" to resume via GET /responses/{id}?stream=true&starting_after=…');
+                    }
+                    appendBanner(parts.join('\n'));
+                    statStatus.textContent = 'error';
+
+                    // Auto-reconnect path: fire if user enabled it and we have
+                    // a response_id. Don't await — let the finally block clean
+                    // up, then kick a new stream via reconnectStream().
+                    if (currentResponseId && autoReconnect.checked && reconnectCount < 5) {
+                        setTimeout(() => reconnectStream(), 400);
+                    }
+                }
+            } finally {
+                clearInterval(timerId);
+                statElapsed.textContent = ((performance.now() - t0) / 1000).toFixed(1) + 's';
+                if (!currentResponseId || !autoReconnect.checked || reconnectCount >= 5) {
+                    sendBtn.disabled = false;
+                    sendBtn.textContent = 'Send';
+                }
+                abortCtrl = null;
+            }
+        }
+
+        async function reconnectStream() {
+            if (!currentResponseId) {
+                appendBanner('Cannot reconnect — no response_id captured yet.');
+                return;
+            }
+            reconnectCount++;
+            const startingAfter = Math.max(currentLastSeq, 0);
+            const url = `/responses/${encodeURIComponent(currentResponseId)}?stream=true&starting_after=${startingAfter}`;
+
+            // Visual separator in the output so the user sees which frames
+            // arrived on the reconnected stream.
+            const sep = document.createElement('div');
+            sep.className = 'response-card';
+            sep.style.borderLeftColor = '#f59e0b';
+            sep.innerHTML = `<div class="status">↻ Reconnect #${reconnectCount} at ${((performance.now() - (currentQueryState?.t0 || performance.now())) / 1000).toFixed(1)}s — GET ${escapeHtml(url)}</div>`;
+            output.appendChild(sep);
+            if (autoScroll.checked) output.scrollTop = output.scrollHeight;
+
+            statStatus.textContent = `reconnecting (${reconnectCount})`;
+            sendBtn.disabled = true;
+            sendBtn.textContent = 'Reconnecting...';
+            reconnectBtn.disabled = true;
+            abortCtrl = new AbortController();
+
+            const t0 = currentQueryState?.t0 || performance.now();
+            let totalBytes = 0;
+            let frameIdx = 0;
+            let chunkIdx = 0;
+
+            const timerId = setInterval(() => {
+                const now = performance.now();
+                statElapsed.textContent = ((now - t0) / 1000).toFixed(1) + 's';
+                if (lastChunkAt > 0) {
+                    const sinceMs = now - lastChunkAt;
+                    statSinceLast.textContent = fmtGap(sinceMs);
+                    if (sinceMs > maxGapMs) {
+                        maxGapMs = sinceMs;
+                        statMaxGap.textContent = fmtGap(maxGapMs);
+                        statMaxGap.classList.toggle('hot', maxGapMs >= 30000);
+                    }
+                }
+            }, 100);
+
+            try {
+                const resp = await fetch(url, { signal: abortCtrl.signal });
+                const ttfbMs = performance.now() - t0;
+                renderResponseCard(resp, ttfbMs);
+                if (!resp.ok) {
+                    appendBanner(`Reconnect HTTP ${resp.status}: ${await resp.text()}`);
+                    statStatus.textContent = `reconnect-error ${resp.status}`;
+                    return;
+                }
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    const chunk = decoder.decode(value, { stream: true });
+                    const nowMs = performance.now();
+                    const chunkElapsed = (nowMs - t0) / 1000;
+                    if (lastChunkAt > 0) {
+                        const gap = nowMs - lastChunkAt;
+                        if (gap > maxGapMs) {
+                            maxGapMs = gap;
+                            statMaxGap.textContent = fmtGap(maxGapMs);
+                            statMaxGap.classList.toggle('hot', maxGapMs >= 30000);
+                        }
+                    }
+                    lastChunkAt = nowMs;
+                    totalBytes += value.byteLength;
+                    chunkIdx++;
+                    capturedRaw += chunk;
+                    appendChunk(chunkIdx, value.byteLength, chunk, chunkElapsed);
+                    buffer += chunk;
+                    buffer = buffer.replace(/\r\n/g, '\n');
+                    let sepIdx;
+                    while ((sepIdx = buffer.indexOf('\n\n')) !== -1) {
+                        const rawFrame = buffer.slice(0, sepIdx);
+                        buffer = buffer.slice(sepIdx + 2);
+                        frameIdx++;
+                        const elapsedSec = (performance.now() - t0) / 1000;
+                        renderFrame(`r${reconnectCount}.${frameIdx}`, rawFrame, elapsedSec);
+                    }
+                }
+                if (buffer.length > 0) {
+                    frameIdx++;
+                    renderFrame(`r${reconnectCount}.${frameIdx}`, buffer, (performance.now() - t0) / 1000);
+                }
+                statStatus.textContent = 'done';
+            } catch (err) {
+                if (err.name === 'AbortError') {
+                    statStatus.textContent = 'aborted';
+                } else {
+                    appendBanner(`Reconnect error at ${((performance.now() - t0) / 1000).toFixed(1)}s: ${err.name}: ${err.message}\nmax gap: ${fmtGap(maxGapMs)} | last frame: ${lastFrameKind}`);
+                    statStatus.textContent = 'reconnect-error';
+                    if (autoReconnect.checked && reconnectCount < 5) {
+                        setTimeout(() => reconnectStream(), 400);
+                        return;
+                    }
+                }
+            } finally {
+                clearInterval(timerId);
+                sendBtn.disabled = false;
+                sendBtn.textContent = 'Send';
+                reconnectBtn.disabled = !currentResponseId;
+                abortCtrl = null;
+            }
+        }
+
+        function manualReconnect() {
+            if (abortCtrl) abortCtrl.abort();
+            reconnectStream();
+        }
+
+        queryEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                sendQuery();
+            }
+        });
+        queryEl.addEventListener('input', () => {
+            queryEl.style.height = 'auto';
+            queryEl.style.height = Math.min(queryEl.scrollHeight, 160) + 'px';
+        });
+    </script>
+</body>
+</html>
